@@ -3889,6 +3889,7 @@ namespace MediaBrowser.Controller.MediaEncoding
             {
                 throw new ArgumentOutOfRangeException(nameof(state), "Video upscaling dimensions must be even values between 2 and 4096.");
             }
+
             var (constrainedWidth, constrainedHeight) = GetFixedOutputSize(
                 inputWidth,
                 inputHeight,
