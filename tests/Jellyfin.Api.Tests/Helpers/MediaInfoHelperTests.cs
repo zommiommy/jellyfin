@@ -14,6 +14,7 @@ using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Model.Dto;
+using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
@@ -59,6 +60,73 @@ namespace Jellyfin.Api.Tests.Helpers
                 SupportsDirectStream = true,
                 SupportsTranscoding = true
             };
+        }
+
+        [Theory]
+        [InlineData(1920, 1080, null, 3840, 2160, 3840, 2160)]
+        [InlineData(1920, 800, null, 3840, 2160, 3840, 1600)]
+        [InlineData(640, 480, null, 3840, 2160, 2880, 2160)]
+        [InlineData(720, 576, "4:3", 3840, 2160, 2880, 2160)]
+        [InlineData(720, 480, "4:3", 3840, 2160, 2880, 2160)]
+        public void GetVideoUpscalingTarget_SmallerSource_FitsBoundingBox(
+            int sourceWidth,
+            int sourceHeight,
+            string? aspectRatio,
+            int maximumWidth,
+            int maximumHeight,
+            int expectedWidth,
+            int expectedHeight)
+        {
+            var mediaSource = new MediaSourceInfo
+            {
+                MediaStreams =
+                [
+                    new MediaStream
+                    {
+                        Type = MediaStreamType.Video,
+                        Width = sourceWidth,
+                        Height = sourceHeight,
+                        AspectRatio = aspectRatio
+                    }
+                ]
+            };
+
+            var result = MediaInfoHelper.GetVideoUpscalingTarget(
+                mediaSource,
+                VideoUpscalingMode.Anime4KModeA,
+                maximumWidth,
+                maximumHeight);
+
+            Assert.Equal(VideoUpscalingMode.Anime4KModeA, result.Mode);
+            Assert.Equal(expectedWidth, result.Width);
+            Assert.Equal(expectedHeight, result.Height);
+        }
+
+        [Fact]
+        public void GetVideoUpscalingTarget_NativeResolution_DisablesUpscaling()
+        {
+            var mediaSource = new MediaSourceInfo
+            {
+                MediaStreams =
+                [
+                    new MediaStream
+                    {
+                        Type = MediaStreamType.Video,
+                        Width = 3840,
+                        Height = 2160
+                    }
+                ]
+            };
+
+            var result = MediaInfoHelper.GetVideoUpscalingTarget(
+                mediaSource,
+                VideoUpscalingMode.Fsr,
+                3840,
+                2160);
+
+            Assert.Equal(VideoUpscalingMode.None, result.Mode);
+            Assert.Null(result.Width);
+            Assert.Null(result.Height);
         }
 
         [Fact]

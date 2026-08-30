@@ -178,8 +178,8 @@ public class MediaInfoHelper
     /// <param name="allowVideoStreamCopy">Allow video stream copy.</param>
     /// <param name="allowAudioStreamCopy">Allow audio stream copy.</param>
     /// <param name="videoUpscalingMode">Requested video upscaling mode.</param>
-    /// <param name="videoUpscalingWidth">Exact video upscaling target width.</param>
-    /// <param name="videoUpscalingHeight">Exact video upscaling target height.</param>
+    /// <param name="videoUpscalingWidth">Maximum video upscaling output width.</param>
+    /// <param name="videoUpscalingHeight">Maximum video upscaling output height.</param>
     /// <param name="alwaysBurnInSubtitleWhenTranscoding">Always burn-in subtitle when transcoding.</param>
     /// <param name="ipAddress">Requesting IP address.</param>
     public void SetDeviceSpecificData(
@@ -207,6 +207,12 @@ public class MediaInfoHelper
         IPAddress ipAddress)
     {
         var streamBuilder = new StreamBuilder(_mediaEncoder, _logger);
+        (videoUpscalingMode, videoUpscalingWidth, videoUpscalingHeight) = GetVideoUpscalingTarget(
+            mediaSource,
+            videoUpscalingMode,
+            videoUpscalingWidth,
+            videoUpscalingHeight);
+        var enableVideoUpscaling = videoUpscalingMode != VideoUpscalingMode.None;
 
         var options = new MediaOptions
         {
@@ -217,7 +223,7 @@ public class MediaInfoHelper
             Profile = profile,
             MaxAudioChannels = maxAudioChannels,
             AllowAudioStreamCopy = allowAudioStreamCopy,
-            AllowVideoStreamCopy = allowVideoStreamCopy,
+            AllowVideoStreamCopy = enableVideoUpscaling ? false : allowVideoStreamCopy,
             AlwaysBurnInSubtitleWhenTranscoding = alwaysBurnInSubtitleWhenTranscoding,
             VideoUpscalingMode = videoUpscalingMode,
             VideoUpscalingWidth = videoUpscalingWidth,
@@ -233,12 +239,12 @@ public class MediaInfoHelper
 
         var user = _userManager.GetUserById(userId) ?? throw new ResourceNotFoundException();
 
-        if (!enableDirectPlay)
+        if (!enableDirectPlay || enableVideoUpscaling)
         {
             mediaSource.SupportsDirectPlay = false;
         }
 
-        if (!enableDirectStream || !allowVideoStreamCopy)
+        if (!enableDirectStream || !allowVideoStreamCopy || enableVideoUpscaling)
         {
             mediaSource.SupportsDirectStream = false;
         }
@@ -636,4 +642,52 @@ public class MediaInfoHelper
 
         return prefix + relativePath;
     }
+    internal static (VideoUpscalingMode Mode, int? Width, int? Height) GetVideoUpscalingTarget(
+        MediaSourceInfo mediaSource,
+        VideoUpscalingMode mode,
+        int? maximumWidth,
+        int? maximumHeight)
+    {
+        var videoStream = mediaSource.VideoStream;
+        if (mode == VideoUpscalingMode.None
+            || videoStream?.Width is not > 0
+            || videoStream.Height is not > 0
+            || maximumWidth is not > 0
+            || maximumHeight is not > 0)
+        {
+            return (VideoUpscalingMode.None, null, null);
+        }
+
+        var aspectRatio = videoStream.Width.Value / (double)videoStream.Height.Value;
+        var aspectRatioParts = videoStream.AspectRatio?.Split(':', 2);
+        if (aspectRatioParts?.Length == 2
+            && double.TryParse(aspectRatioParts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var aspectWidth)
+            && double.TryParse(aspectRatioParts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var aspectHeight)
+            && aspectWidth > 0
+            && aspectHeight > 0)
+        {
+            aspectRatio = aspectWidth / aspectHeight;
+        }
+
+        int width;
+        int height;
+        if (aspectRatio >= maximumWidth.Value / (double)maximumHeight.Value)
+        {
+            width = maximumWidth.Value;
+            height = 2 * ((int)Math.Floor(width / aspectRatio) / 2);
+        }
+        else
+        {
+            height = maximumHeight.Value;
+            width = 2 * ((int)Math.Floor(height * aspectRatio) / 2);
+        }
+
+        if (width <= videoStream.Width.Value || height <= videoStream.Height.Value)
+        {
+            return (VideoUpscalingMode.None, null, null);
+        }
+
+        return (mode, width, height);
+    }
+
 }

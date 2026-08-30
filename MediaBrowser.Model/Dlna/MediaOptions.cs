@@ -61,12 +61,12 @@ namespace MediaBrowser.Model.Dlna
         public VideoUpscalingMode VideoUpscalingMode { get; set; }
 
         /// <summary>
-        /// Gets or sets the exact video upscaling target width.
+        /// Gets or sets the maximum video upscaling output width.
         /// </summary>
         public int? VideoUpscalingWidth { get; set; }
 
         /// <summary>
-        /// Gets or sets the exact video upscaling target height.
+        /// Gets or sets the maximum video upscaling output height.
         /// </summary>
         public int? VideoUpscalingHeight { get; set; }
 

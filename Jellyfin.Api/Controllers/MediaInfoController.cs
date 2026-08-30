@@ -173,12 +173,6 @@ public class MediaInfoController : BaseJellyfinApiController
             return BadRequest(videoUpscalingError);
         }
 
-        if (videoUpscalingMode != VideoUpscalingMode.None)
-        {
-            enableDirectPlay = false;
-            enableDirectStream = false;
-            allowVideoStreamCopy = false;
-        }
 
         userId = RequestHelpers.GetUserId(User, userId);
         var user = userId.IsNullOrEmpty()
@@ -335,11 +329,6 @@ public class MediaInfoController : BaseJellyfinApiController
             return BadRequest(videoUpscalingError);
         }
 
-        if (request.VideoUpscalingMode != VideoUpscalingMode.None)
-        {
-            request.EnableDirectPlay = false;
-            request.EnableDirectStream = false;
-        }
         return await _mediaInfoHelper.OpenMediaSource(HttpContext, request).ConfigureAwait(false);
     }
 
