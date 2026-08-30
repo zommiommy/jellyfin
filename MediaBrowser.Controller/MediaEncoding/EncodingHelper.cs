@@ -3889,7 +3889,6 @@ namespace MediaBrowser.Controller.MediaEncoding
             {
                 throw new ArgumentOutOfRangeException(nameof(state), "Video upscaling dimensions must be even values between 2 and 4096.");
             }
-
             var (constrainedWidth, constrainedHeight) = GetFixedOutputSize(
                 inputWidth,
                 inputHeight,
@@ -3909,12 +3908,15 @@ namespace MediaBrowser.Controller.MediaEncoding
                 _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unsupported video upscaling mode.")
             };
 
-            if (string.IsNullOrWhiteSpace(options.VideoUpscalingShaderDirectory))
+            var shaderDirectory = string.IsNullOrWhiteSpace(options.VideoUpscalingShaderDirectory)
+                ? Environment.GetEnvironmentVariable("JELLYFIN_VIDEO_UPSCALING_SHADER_DIRECTORY")
+                : options.VideoUpscalingShaderDirectory;
+            if (string.IsNullOrWhiteSpace(shaderDirectory))
             {
                 throw new InvalidOperationException("The video upscaling shader directory is not configured.");
             }
 
-            var shaderPath = Path.Combine(options.VideoUpscalingShaderDirectory, shaderFileName);
+            var shaderPath = Path.Combine(shaderDirectory, shaderFileName);
             if (!File.Exists(shaderPath))
             {
                 throw new FileNotFoundException("The configured video upscaling shader was not found.", shaderPath);
