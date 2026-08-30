@@ -49,6 +49,8 @@ namespace MediaBrowser.Model.MediaInfo
 
         public int? VideoUpscalingHeight { get; set; }
 
+        public IReadOnlyDictionary<string, string> VideoUpscalingOptions { get; set; }
+
         public IReadOnlyList<MediaProtocol> DirectPlayProtocols { get; set; }
     }
 }

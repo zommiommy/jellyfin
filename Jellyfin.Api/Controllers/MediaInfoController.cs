@@ -167,6 +167,7 @@ public class MediaInfoController : BaseJellyfinApiController
         var videoUpscalingMode = playbackInfoDto?.VideoUpscalingMode ?? VideoUpscalingMode.None;
         var videoUpscalingWidth = playbackInfoDto?.VideoUpscalingWidth;
         var videoUpscalingHeight = playbackInfoDto?.VideoUpscalingHeight;
+        var videoUpscalingOptions = playbackInfoDto?.VideoUpscalingOptions;
         var videoUpscalingError = ValidateVideoUpscalingRequest(videoUpscalingMode, videoUpscalingWidth, videoUpscalingHeight);
         if (videoUpscalingError is not null)
         {
@@ -222,6 +223,7 @@ public class MediaInfoController : BaseJellyfinApiController
                     videoUpscalingMode,
                     videoUpscalingWidth,
                     videoUpscalingHeight,
+                    videoUpscalingOptions,
                     playbackInfoDto?.AlwaysBurnInSubtitleWhenTranscoding ?? false,
                     Request.HttpContext.GetNormalizedRemoteIP());
             }
@@ -254,6 +256,7 @@ public class MediaInfoController : BaseJellyfinApiController
                         VideoUpscalingMode = videoUpscalingMode,
                         VideoUpscalingWidth = videoUpscalingWidth,
                         VideoUpscalingHeight = videoUpscalingHeight,
+                        VideoUpscalingOptions = videoUpscalingOptions,
                         AlwaysBurnInSubtitleWhenTranscoding = playbackInfoDto?.AlwaysBurnInSubtitleWhenTranscoding ?? false
                     }).ConfigureAwait(false);
 
@@ -316,6 +319,7 @@ public class MediaInfoController : BaseJellyfinApiController
             VideoUpscalingMode = openLiveStreamDto?.VideoUpscalingMode ?? VideoUpscalingMode.None,
             VideoUpscalingWidth = openLiveStreamDto?.VideoUpscalingWidth,
             VideoUpscalingHeight = openLiveStreamDto?.VideoUpscalingHeight,
+            VideoUpscalingOptions = openLiveStreamDto?.VideoUpscalingOptions,
             EnableDirectPlay = enableDirectPlay ?? openLiveStreamDto?.EnableDirectPlay ?? true,
             EnableDirectStream = enableDirectStream ?? openLiveStreamDto?.EnableDirectStream ?? true,
             DirectPlayProtocols = openLiveStreamDto?.DirectPlayProtocols ?? new[] { MediaProtocol.Http },

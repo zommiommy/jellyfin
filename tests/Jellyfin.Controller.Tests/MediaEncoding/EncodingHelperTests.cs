@@ -299,13 +299,22 @@ public class EncodingHelperTests
         Assert.Equal(20_000_000, CreateHelper().GetVideoBitrateParamValue(state.BaseRequest, state.VideoStream, "h264"));
     }
 
-    [Fact]
-    public void GetNvidiaVidFiltersPrefered_VideoUpscaling_UsesLibplaceboInsteadOfCudaScaling()
+    [Theory]
+    [InlineData(VideoUpscalingMode.Fsr, "FSR.glsl")]
+    [InlineData(VideoUpscalingMode.Anime4KModeA, "Anime4K_Mode_A.glsl")]
+    [InlineData(VideoUpscalingMode.Anime4KModeB, "Anime4K_Mode_B.glsl")]
+    [InlineData(VideoUpscalingMode.Anime4KModeC, "Anime4K_Mode_C.glsl")]
+    [InlineData(VideoUpscalingMode.Anime4KModeAPlusA, "Anime4K_Mode_A+A.glsl")]
+    [InlineData(VideoUpscalingMode.Anime4KModeBPlusB, "Anime4K_Mode_B+B.glsl")]
+    [InlineData(VideoUpscalingMode.Anime4KModeCPlusA, "Anime4K_Mode_C+A.glsl")]
+    public void GetNvidiaVidFiltersPrefered_VideoUpscaling_UsesSelectedShaderAndMpvDefaults(
+        VideoUpscalingMode mode,
+        string shaderFileName)
     {
         var shaderDirectory = Directory.CreateTempSubdirectory("jellyfin-upscale-test-");
         try
         {
-            var shaderPath = Path.Combine(shaderDirectory.FullName, "Anime4K_Mode_A.glsl");
+            var shaderPath = Path.Combine(shaderDirectory.FullName, shaderFileName);
             File.WriteAllText(shaderPath, "//!HOOK MAIN");
 
             var mediaEncoder = new Mock<IMediaEncoder>();
@@ -319,7 +328,7 @@ public class EncodingHelperTests
             state.VideoStream.Height = 1080;
             state.BaseRequest.Width = 3840;
             state.BaseRequest.Height = 2160;
-            state.BaseRequest.VideoUpscalingMode = VideoUpscalingMode.Anime4KModeA;
+            state.BaseRequest.VideoUpscalingMode = mode;
 
             var options = new EncodingOptions
             {
@@ -328,10 +337,67 @@ public class EncodingHelperTests
             };
 
             var filters = CreateHelper(mediaEncoder.Object).GetNvidiaVidFiltersPrefered(state, options, "h264_cuda", "h264_nvenc");
+            var filter = string.Join(',', filters.MainFilters);
 
-            Assert.Contains(filters.MainFilters, filter => filter.Contains("libplacebo=w=3840:h=2160", StringComparison.Ordinal));
+            Assert.Contains("libplacebo=w=3840:h=2160", filter, StringComparison.Ordinal);
+            Assert.Contains("upscaler=ewa_lanczos4sharpest", filter, StringComparison.Ordinal);
+            Assert.Contains("downscaler=catmull_rom", filter, StringComparison.Ordinal);
+            Assert.Contains("antiringing=1", filter, StringComparison.Ordinal);
+            Assert.Contains("deband=1:deband_iterations=4:deband_threshold=48:deband_radius=24:deband_grain=16", filter, StringComparison.Ordinal);
+            Assert.Contains("plane_upscaler=ewa_lanczos4sharpest", filter, StringComparison.Ordinal);
+            Assert.Contains(shaderPath, filter, StringComparison.Ordinal);
             Assert.Contains("hwupload_cuda", filters.MainFilters);
-            Assert.DoesNotContain(filters.MainFilters, filter => filter.StartsWith("scale_cuda", StringComparison.Ordinal));
+            Assert.DoesNotContain(filters.MainFilters, item => item.StartsWith("scale_cuda", StringComparison.Ordinal));
+        }
+        finally
+        {
+            shaderDirectory.Delete(true);
+        }
+    }
+
+    [Fact]
+    public void GetNvidiaVidFiltersPrefered_VideoUpscaling_AppliesCustomRenderingOptions()
+    {
+        var shaderDirectory = Directory.CreateTempSubdirectory("jellyfin-upscale-test-");
+        try
+        {
+            var shaderPath = Path.Combine(shaderDirectory.FullName, "FSR.glsl");
+            File.WriteAllText(shaderPath, "//!HOOK MAIN");
+
+            var mediaEncoder = new Mock<IMediaEncoder>();
+            mediaEncoder.Setup(i => i.SupportsHwaccel("vulkan")).Returns(true);
+            mediaEncoder.Setup(i => i.SupportsFilter("libplacebo")).Returns(true);
+            mediaEncoder.Setup(i => i.SupportsFilter("hwupload_cuda")).Returns(true);
+            mediaEncoder.Setup(i => i.EscapeSubtitleFilterPath(shaderPath)).Returns(shaderPath);
+
+            var state = BuildState(subtitle: null, deliveryMethod: null);
+            state.VideoStream!.Width = 1280;
+            state.VideoStream.Height = 720;
+            state.BaseRequest.Width = 1920;
+            state.BaseRequest.Height = 1080;
+            state.BaseRequest.VideoUpscalingMode = VideoUpscalingMode.Fsr;
+            state.BaseRequest.StreamOptions["videoUpscalingScaler"] = "bilinear";
+            state.BaseRequest.StreamOptions["videoUpscalingDownscaler"] = "mitchell";
+            state.BaseRequest.StreamOptions["videoUpscalingChromaScaler"] = "catmull_rom";
+            state.BaseRequest.StreamOptions["videoUpscalingAntiringing"] = "0.5";
+            state.BaseRequest.StreamOptions["videoUpscalingDeband"] = "false";
+            state.BaseRequest.StreamOptions["videoUpscalingDebandIterations"] = "2";
+            state.BaseRequest.StreamOptions["videoUpscalingDebandThreshold"] = "16";
+            state.BaseRequest.StreamOptions["videoUpscalingDebandRadius"] = "8";
+            state.BaseRequest.StreamOptions["videoUpscalingDebandGrain"] = "4";
+
+            var options = new EncodingOptions
+            {
+                HardwareAccelerationType = HardwareAccelerationType.nvenc,
+                VideoUpscalingShaderDirectory = shaderDirectory.FullName
+            };
+
+            var filters = CreateHelper(mediaEncoder.Object).GetNvidiaVidFiltersPrefered(state, options, "h264_cuda", "h264_nvenc");
+            var filter = string.Join(',', filters.MainFilters);
+
+            Assert.Contains("upscaler=bilinear:downscaler=mitchell:antiringing=0.5", filter, StringComparison.Ordinal);
+            Assert.Contains("deband=0:deband_iterations=2:deband_threshold=16:deband_radius=8:deband_grain=4", filter, StringComparison.Ordinal);
+            Assert.Contains("plane_upscaler=catmull_rom", filter, StringComparison.Ordinal);
         }
         finally
         {

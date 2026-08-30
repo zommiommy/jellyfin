@@ -3906,6 +3906,11 @@ namespace MediaBrowser.Controller.MediaEncoding
             {
                 VideoUpscalingMode.Fsr => "FSR.glsl",
                 VideoUpscalingMode.Anime4KModeA => "Anime4K_Mode_A.glsl",
+                VideoUpscalingMode.Anime4KModeB => "Anime4K_Mode_B.glsl",
+                VideoUpscalingMode.Anime4KModeC => "Anime4K_Mode_C.glsl",
+                VideoUpscalingMode.Anime4KModeAPlusA => "Anime4K_Mode_A+A.glsl",
+                VideoUpscalingMode.Anime4KModeBPlusB => "Anime4K_Mode_B+B.glsl",
+                VideoUpscalingMode.Anime4KModeCPlusA => "Anime4K_Mode_C+A.glsl",
                 _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unsupported video upscaling mode.")
             };
 
@@ -3923,12 +3928,95 @@ namespace MediaBrowser.Controller.MediaEncoding
                 throw new FileNotFoundException("The configured video upscaling shader was not found.", shaderPath);
             }
 
+            var upscaler = GetVideoUpscalingScalerOption(state.BaseRequest, "videoUpscalingScaler", "ewa_lanczos4sharpest");
+            var downscaler = GetVideoUpscalingScalerOption(state.BaseRequest, "videoUpscalingDownscaler", "catmull_rom");
+            var chromaScaler = GetVideoUpscalingScalerOption(state.BaseRequest, "videoUpscalingChromaScaler", "ewa_lanczos4sharpest");
+            var antiringing = GetVideoUpscalingDoubleOption(state.BaseRequest, "videoUpscalingAntiringing", 1, 0, 1);
+            var deband = GetVideoUpscalingBoolOption(state.BaseRequest, "videoUpscalingDeband", true);
+            var debandIterations = GetVideoUpscalingIntOption(state.BaseRequest, "videoUpscalingDebandIterations", 4, 0, 16);
+            var debandThreshold = GetVideoUpscalingDoubleOption(state.BaseRequest, "videoUpscalingDebandThreshold", 48, 0, 1024);
+            var debandRadius = GetVideoUpscalingDoubleOption(state.BaseRequest, "videoUpscalingDebandRadius", 24, 0, 1024);
+            var debandGrain = GetVideoUpscalingDoubleOption(state.BaseRequest, "videoUpscalingDebandGrain", 16, 0, 1024);
+
             return string.Format(
                 CultureInfo.InvariantCulture,
-                "libplacebo=w={0}:h={1}:upscaler=none:downscaler=none:custom_shader_path='{2}'",
+                "libplacebo=w={0}:h={1}:upscaler={2}:downscaler={3}:antiringing={4}:deband={5}:deband_iterations={6}:deband_threshold={7}:deband_radius={8}:deband_grain={9}:extra_opts='plane_upscaler={10}':custom_shader_path='{11}'",
                 outputWidth.Value,
                 outputHeight.Value,
+                upscaler,
+                downscaler,
+                antiringing,
+                deband ? 1 : 0,
+                debandIterations,
+                debandThreshold,
+                debandRadius,
+                debandGrain,
+                chromaScaler,
                 _mediaEncoder.EscapeSubtitleFilterPath(shaderPath));
+        }
+
+        private static string GetVideoUpscalingScalerOption(BaseEncodingJobOptions request, string name, string fallback)
+        {
+            var value = (request.GetOption(name) ?? fallback).ToLowerInvariant();
+            return value switch
+            {
+                "none" or "nearest" or "bilinear" or "oversample" or "bicubic" or "gaussian" or "catmull_rom"
+                    or "mitchell" or "hermite" or "lanczos" or "ewa_lanczos" or "ewa_lanczossharp"
+                    or "ewa_lanczos4sharpest" => value,
+                _ => throw new ArgumentException($"Unsupported video upscaling scaler '{value}'.", name)
+            };
+        }
+
+        private static int GetVideoUpscalingIntOption(BaseEncodingJobOptions request, string name, int fallback, int minimum, int maximum)
+        {
+            var value = request.GetOption(name);
+            if (string.IsNullOrEmpty(value))
+            {
+                return fallback;
+            }
+
+            if (int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+                && parsed >= minimum
+                && parsed <= maximum)
+            {
+                return parsed;
+            }
+
+            throw new ArgumentOutOfRangeException(name, value, $"Value must be between {minimum} and {maximum}.");
+        }
+
+        private static double GetVideoUpscalingDoubleOption(BaseEncodingJobOptions request, string name, double fallback, double minimum, double maximum)
+        {
+            var value = request.GetOption(name);
+            if (string.IsNullOrEmpty(value))
+            {
+                return fallback;
+            }
+
+            if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed)
+                && parsed >= minimum
+                && parsed <= maximum)
+            {
+                return parsed;
+            }
+
+            throw new ArgumentOutOfRangeException(name, value, $"Value must be between {minimum} and {maximum}.");
+        }
+
+        private static bool GetVideoUpscalingBoolOption(BaseEncodingJobOptions request, string name, bool fallback)
+        {
+            var value = request.GetOption(name);
+            if (string.IsNullOrEmpty(value))
+            {
+                return fallback;
+            }
+
+            if (bool.TryParse(value, out var parsed))
+            {
+                return parsed;
+            }
+
+            throw new ArgumentException($"Value '{value}' is not a boolean.", name);
         }
 
         public string GetVideoTransposeDirection(EncodingJobInfo state)

@@ -234,12 +234,17 @@ public class StreamInfoTests
             VideoUpscalingMode = MediaBrowser.Model.MediaInfo.VideoUpscalingMode.Anime4KModeA
         };
 
+        streamInfo.SetOption("videoUpscalingScaler", "ewa_lanczos4sharpest");
+        streamInfo.SetOption("videoUpscalingDebandThreshold", "48");
+
         var queryString = streamInfo.ToUrl(BaseUrl, "123", null).Split('?', 2)[1];
         var query = System.Web.HttpUtility.ParseQueryString(queryString);
 
         Assert.Equal("3840", query["Width"]);
         Assert.Equal("2160", query["Height"]);
         Assert.Equal("Anime4KModeA", query["videoUpscalingMode"]);
+        Assert.Equal("ewa_lanczos4sharpest", query["videoUpscalingScaler"]);
+        Assert.Equal("48", query["videoUpscalingDebandThreshold"]);
     }
 
     [Fact]

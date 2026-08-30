@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Net;
@@ -180,6 +181,7 @@ public class MediaInfoHelper
     /// <param name="videoUpscalingMode">Requested video upscaling mode.</param>
     /// <param name="videoUpscalingWidth">Maximum video upscaling output width.</param>
     /// <param name="videoUpscalingHeight">Maximum video upscaling output height.</param>
+    /// <param name="videoUpscalingOptions">Advanced server-side video upscaling options.</param>
     /// <param name="alwaysBurnInSubtitleWhenTranscoding">Always burn-in subtitle when transcoding.</param>
     /// <param name="ipAddress">Requesting IP address.</param>
     public void SetDeviceSpecificData(
@@ -203,6 +205,7 @@ public class MediaInfoHelper
         VideoUpscalingMode videoUpscalingMode,
         int? videoUpscalingWidth,
         int? videoUpscalingHeight,
+        IReadOnlyDictionary<string, string>? videoUpscalingOptions,
         bool alwaysBurnInSubtitleWhenTranscoding,
         IPAddress ipAddress)
     {
@@ -288,6 +291,14 @@ public class MediaInfoHelper
         {
             streamInfo.PlaySessionId = playSessionId;
             streamInfo.StartPositionTicks = startTimeTicks;
+
+            if (enableVideoUpscaling && videoUpscalingOptions is not null)
+            {
+                foreach (var option in videoUpscalingOptions)
+                {
+                    streamInfo.SetOption(option.Key, option.Value);
+                }
+            }
 
             mediaSource.SupportsDirectPlay = streamInfo.PlayMethod == PlayMethod.DirectPlay;
 
@@ -480,6 +491,7 @@ public class MediaInfoHelper
                 request.VideoUpscalingMode,
                 request.VideoUpscalingWidth,
                 request.VideoUpscalingHeight,
+                request.VideoUpscalingOptions,
                 request.AlwaysBurnInSubtitleWhenTranscoding,
                 httpContext.GetNormalizedRemoteIP());
         }

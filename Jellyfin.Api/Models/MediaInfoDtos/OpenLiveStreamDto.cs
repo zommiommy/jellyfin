@@ -94,4 +94,9 @@ public class OpenLiveStreamDto
     /// Gets or sets the maximum video upscaling output height.
     /// </summary>
     public int? VideoUpscalingHeight { get; set; }
+
+    /// <summary>
+    /// Gets or sets advanced server-side video upscaling options.
+    /// </summary>
+    public IReadOnlyDictionary<string, string>? VideoUpscalingOptions { get; set; }
 }
