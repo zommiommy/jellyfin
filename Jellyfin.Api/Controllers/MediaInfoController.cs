@@ -173,7 +173,6 @@ public class MediaInfoController : BaseJellyfinApiController
             return BadRequest(videoUpscalingError);
         }
 
-
         userId = RequestHelpers.GetUserId(User, userId);
         var user = userId.IsNullOrEmpty()
             ? null
@@ -368,6 +367,7 @@ public class MediaInfoController : BaseJellyfinApiController
             ArrayPool<byte>.Shared.Return(buffer);
         }
     }
+
     private static string? ValidateVideoUpscalingRequest(VideoUpscalingMode mode, int? width, int? height)
     {
         if (mode == VideoUpscalingMode.None)
@@ -387,5 +387,4 @@ public class MediaInfoController : BaseJellyfinApiController
 
         return null;
     }
-
 }

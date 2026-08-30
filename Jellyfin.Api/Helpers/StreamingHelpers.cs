@@ -73,6 +73,7 @@ public static class StreamingHelpers
 
             streamingRequest.VideoUpscalingMode = parsedMode;
         }
+
         if (httpRequest.Path.Value is null)
         {
             throw new ResourceNotFoundException(nameof(httpRequest.Path));

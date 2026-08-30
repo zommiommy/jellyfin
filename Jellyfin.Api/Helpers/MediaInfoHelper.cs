@@ -642,6 +642,7 @@ public class MediaInfoHelper
 
         return prefix + relativePath;
     }
+
     internal static (VideoUpscalingMode Mode, int? Width, int? Height) GetVideoUpscalingTarget(
         MediaSourceInfo mediaSource,
         VideoUpscalingMode mode,
@@ -689,5 +690,4 @@ public class MediaInfoHelper
 
         return (mode, width, height);
     }
-
 }
