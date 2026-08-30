@@ -130,6 +130,34 @@ namespace Jellyfin.Api.Tests.Helpers
         }
 
         [Fact]
+        public void GetVideoUpscalingTarget_HdrSource_DisablesUpscaling()
+        {
+            var mediaSource = new MediaSourceInfo
+            {
+                MediaStreams =
+                [
+                    new MediaStream
+                    {
+                        Type = MediaStreamType.Video,
+                        Width = 1920,
+                        Height = 1080,
+                        ColorTransfer = "smpte2084"
+                    }
+                ]
+            };
+
+            var result = MediaInfoHelper.GetVideoUpscalingTarget(
+                mediaSource,
+                VideoUpscalingMode.Anime4KModeA,
+                3840,
+                2160);
+
+            Assert.Equal(VideoUpscalingMode.None, result.Mode);
+            Assert.Null(result.Width);
+            Assert.Null(result.Height);
+        }
+
+        [Fact]
         public void SortMediaSources_PreferredItemExceedsBitrate_StaysDefault()
         {
             // The version the user was watching (the queried item) must stay the default

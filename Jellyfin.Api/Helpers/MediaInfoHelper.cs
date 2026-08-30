@@ -652,6 +652,7 @@ public class MediaInfoHelper
         var videoStream = mediaSource.VideoStream;
         if (mode == VideoUpscalingMode.None
             || videoStream?.Width is not > 0
+            || videoStream.VideoRange == VideoRange.HDR
             || videoStream.Height is not > 0
             || maximumWidth is not > 0
             || maximumHeight is not > 0)
