@@ -164,6 +164,22 @@ public class MediaInfoController : BaseJellyfinApiController
         allowVideoStreamCopy ??= playbackInfoDto?.AllowVideoStreamCopy ?? true;
         allowAudioStreamCopy ??= playbackInfoDto?.AllowAudioStreamCopy ?? true;
 
+        var videoUpscalingMode = playbackInfoDto?.VideoUpscalingMode ?? VideoUpscalingMode.None;
+        var videoUpscalingWidth = playbackInfoDto?.VideoUpscalingWidth;
+        var videoUpscalingHeight = playbackInfoDto?.VideoUpscalingHeight;
+        var videoUpscalingError = ValidateVideoUpscalingRequest(videoUpscalingMode, videoUpscalingWidth, videoUpscalingHeight);
+        if (videoUpscalingError is not null)
+        {
+            return BadRequest(videoUpscalingError);
+        }
+
+        if (videoUpscalingMode != VideoUpscalingMode.None)
+        {
+            enableDirectPlay = false;
+            enableDirectStream = false;
+            allowVideoStreamCopy = false;
+        }
+
         userId = RequestHelpers.GetUserId(User, userId);
         var user = userId.IsNullOrEmpty()
             ? null
@@ -210,6 +226,9 @@ public class MediaInfoController : BaseJellyfinApiController
                     enableTranscoding.Value,
                     allowVideoStreamCopy.Value,
                     allowAudioStreamCopy.Value,
+                    videoUpscalingMode,
+                    videoUpscalingWidth,
+                    videoUpscalingHeight,
                     playbackInfoDto?.AlwaysBurnInSubtitleWhenTranscoding ?? false,
                     Request.HttpContext.GetNormalizedRemoteIP());
             }
@@ -239,6 +258,9 @@ public class MediaInfoController : BaseJellyfinApiController
                         SubtitleStreamIndex = subtitleStreamIndex,
                         UserId = userId ?? Guid.Empty,
                         OpenToken = mediaSource.OpenToken,
+                        VideoUpscalingMode = videoUpscalingMode,
+                        VideoUpscalingWidth = videoUpscalingWidth,
+                        VideoUpscalingHeight = videoUpscalingHeight,
                         AlwaysBurnInSubtitleWhenTranscoding = playbackInfoDto?.AlwaysBurnInSubtitleWhenTranscoding ?? false
                     }).ConfigureAwait(false);
 
@@ -298,11 +320,26 @@ public class MediaInfoController : BaseJellyfinApiController
             MaxAudioChannels = maxAudioChannels ?? openLiveStreamDto?.MaxAudioChannels,
             ItemId = itemId ?? openLiveStreamDto?.ItemId ?? Guid.Empty,
             DeviceProfile = openLiveStreamDto?.DeviceProfile,
+            VideoUpscalingMode = openLiveStreamDto?.VideoUpscalingMode ?? VideoUpscalingMode.None,
+            VideoUpscalingWidth = openLiveStreamDto?.VideoUpscalingWidth,
+            VideoUpscalingHeight = openLiveStreamDto?.VideoUpscalingHeight,
             EnableDirectPlay = enableDirectPlay ?? openLiveStreamDto?.EnableDirectPlay ?? true,
             EnableDirectStream = enableDirectStream ?? openLiveStreamDto?.EnableDirectStream ?? true,
             DirectPlayProtocols = openLiveStreamDto?.DirectPlayProtocols ?? new[] { MediaProtocol.Http },
             AlwaysBurnInSubtitleWhenTranscoding = alwaysBurnInSubtitleWhenTranscoding ?? openLiveStreamDto?.AlwaysBurnInSubtitleWhenTranscoding ?? false
         };
+
+        var videoUpscalingError = ValidateVideoUpscalingRequest(request.VideoUpscalingMode, request.VideoUpscalingWidth, request.VideoUpscalingHeight);
+        if (videoUpscalingError is not null)
+        {
+            return BadRequest(videoUpscalingError);
+        }
+
+        if (request.VideoUpscalingMode != VideoUpscalingMode.None)
+        {
+            request.EnableDirectPlay = false;
+            request.EnableDirectStream = false;
+        }
         return await _mediaInfoHelper.OpenMediaSource(HttpContext, request).ConfigureAwait(false);
     }
 
@@ -342,4 +379,24 @@ public class MediaInfoController : BaseJellyfinApiController
             ArrayPool<byte>.Shared.Return(buffer);
         }
     }
+    private static string? ValidateVideoUpscalingRequest(VideoUpscalingMode mode, int? width, int? height)
+    {
+        if (mode == VideoUpscalingMode.None)
+        {
+            return null;
+        }
+
+        if (!width.HasValue || !height.HasValue)
+        {
+            return "Video upscaling requires both a target width and height.";
+        }
+
+        if (width is < 2 or > 4096 || height is < 2 or > 4096 || width % 2 != 0 || height % 2 != 0)
+        {
+            return "Video upscaling dimensions must be even values between 2 and 4096.";
+        }
+
+        return null;
+    }
+
 }

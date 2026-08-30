@@ -58,6 +58,7 @@ public class EncodingOptions
         EnableHardwareEncoding = true;
         AllowHevcEncoding = false;
         AllowAv1Encoding = false;
+        VideoUpscalingShaderDirectory = string.Empty;
         EnableSubtitleExtraction = true;
         SubtitleExtractionTimeoutMinutes = 30;
         AllowOnDemandMetadataBasedKeyframeExtractionForExtensions = ["mkv"];
@@ -284,6 +285,11 @@ public class EncodingOptions
     /// Gets or sets a value indicating whether AV1 encoding is enabled.
     /// </summary>
     public bool AllowAv1Encoding { get; set; }
+
+    /// <summary>
+    /// Gets or sets the directory containing server-approved mpv hook shaders used for video upscaling.
+    /// </summary>
+    public string VideoUpscalingShaderDirectory { get; set; }
 
     /// <summary>
     /// Gets or sets a value indicating whether subtitle extraction is enabled.

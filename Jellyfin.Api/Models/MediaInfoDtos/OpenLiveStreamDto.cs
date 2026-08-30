@@ -79,4 +79,19 @@ public class OpenLiveStreamDto
     /// Gets or sets the device play protocols.
     /// </summary>
     public IReadOnlyList<MediaProtocol> DirectPlayProtocols { get; set; } = Array.Empty<MediaProtocol>();
+
+    /// <summary>
+    /// Gets or sets the requested video upscaling mode.
+    /// </summary>
+    public VideoUpscalingMode VideoUpscalingMode { get; set; }
+
+    /// <summary>
+    /// Gets or sets the exact video upscaling target width.
+    /// </summary>
+    public int? VideoUpscalingWidth { get; set; }
+
+    /// <summary>
+    /// Gets or sets the exact video upscaling target height.
+    /// </summary>
+    public int? VideoUpscalingHeight { get; set; }
 }

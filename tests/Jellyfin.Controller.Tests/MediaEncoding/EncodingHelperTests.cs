@@ -261,6 +261,84 @@ public class EncodingHelperTests
         Assert.Contains("-ar 48000", args, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void EnforceResolutionLimit_WithoutUpscaling_ConvertsDimensionsToCeilings()
+    {
+        var state = BuildState(subtitle: null, deliveryMethod: null);
+        state.BaseRequest.Width = 1920;
+        state.BaseRequest.Height = 1080;
+
+        CreateHelper().EnforceResolutionLimit(state);
+
+        Assert.Null(state.BaseRequest.Width);
+        Assert.Null(state.BaseRequest.Height);
+        Assert.Equal(1920, state.BaseRequest.MaxWidth);
+        Assert.Equal(1080, state.BaseRequest.MaxHeight);
+    }
+
+    [Fact]
+    public void EnforceResolutionLimit_VideoUpscaling_PreservesExactDimensions()
+    {
+        var state = BuildState(subtitle: null, deliveryMethod: null);
+        state.VideoStream!.Width = 1920;
+        state.VideoStream.Height = 1080;
+        state.VideoStream.BitRate = 4_000_000;
+        state.BaseRequest.Width = 3840;
+        state.BaseRequest.Height = 2160;
+        state.BaseRequest.VideoUpscalingMode = VideoUpscalingMode.Fsr;
+        state.BaseRequest.VideoBitRate = 20_000_000;
+
+        CreateHelper().EnforceResolutionLimit(state);
+
+        Assert.Equal(3840, state.BaseRequest.Width);
+        Assert.Equal(2160, state.BaseRequest.Height);
+        Assert.Null(state.BaseRequest.MaxWidth);
+        Assert.Null(state.BaseRequest.MaxHeight);
+        Assert.Equal(3840, state.OutputWidth);
+        Assert.Equal(2160, state.OutputHeight);
+        Assert.Equal(20_000_000, CreateHelper().GetVideoBitrateParamValue(state.BaseRequest, state.VideoStream, "h264"));
+    }
+
+    [Fact]
+    public void GetNvidiaVidFiltersPrefered_VideoUpscaling_UsesLibplaceboInsteadOfCudaScaling()
+    {
+        var shaderDirectory = Directory.CreateTempSubdirectory("jellyfin-upscale-test-");
+        try
+        {
+            var shaderPath = Path.Combine(shaderDirectory.FullName, "Anime4K_Mode_A.glsl");
+            File.WriteAllText(shaderPath, "//!HOOK MAIN");
+
+            var mediaEncoder = new Mock<IMediaEncoder>();
+            mediaEncoder.Setup(i => i.SupportsHwaccel("vulkan")).Returns(true);
+            mediaEncoder.Setup(i => i.SupportsFilter("libplacebo")).Returns(true);
+            mediaEncoder.Setup(i => i.SupportsFilter("hwupload_cuda")).Returns(true);
+            mediaEncoder.Setup(i => i.EscapeSubtitleFilterPath(shaderPath)).Returns(shaderPath);
+
+            var state = BuildState(subtitle: null, deliveryMethod: null);
+            state.VideoStream!.Width = 1920;
+            state.VideoStream.Height = 1080;
+            state.BaseRequest.Width = 3840;
+            state.BaseRequest.Height = 2160;
+            state.BaseRequest.VideoUpscalingMode = VideoUpscalingMode.Anime4KModeA;
+
+            var options = new EncodingOptions
+            {
+                HardwareAccelerationType = HardwareAccelerationType.nvenc,
+                VideoUpscalingShaderDirectory = shaderDirectory.FullName
+            };
+
+            var filters = CreateHelper(mediaEncoder.Object).GetNvidiaVidFiltersPrefered(state, options, "h264_cuda", "h264_nvenc");
+
+            Assert.Contains(filters.MainFilters, filter => filter.Contains("libplacebo=w=3840:h=2160", StringComparison.Ordinal));
+            Assert.Contains("hwupload_cuda", filters.MainFilters);
+            Assert.DoesNotContain(filters.MainFilters, filter => filter.StartsWith("scale_cuda", StringComparison.Ordinal));
+        }
+        finally
+        {
+            shaderDirectory.Delete(true);
+        }
+    }
+
     private static EncodingJobInfo BuildAudioState(string audioCodec, int requestedSampleRate, string? outputContainer = null)
     {
         var audio = new MediaStream { Index = 0, Type = MediaStreamType.Audio, Codec = "flac", SampleRate = 96000 };
@@ -322,10 +400,9 @@ public class EncodingHelperTests
         };
     }
 
-    private static EncodingHelper CreateHelper()
+    private static EncodingHelper CreateHelper(IMediaEncoder? mediaEncoder = null)
     {
         var appPaths = Mock.Of<IApplicationPaths>();
-        var mediaEncoder = new Mock<IMediaEncoder>();
         var subtitleEncoder = new Mock<ISubtitleEncoder>();
         var config = new Mock<IConfiguration>();
         var configurationManager = new Mock<IConfigurationManager>();
@@ -333,7 +410,7 @@ public class EncodingHelperTests
 
         return new EncodingHelper(
             appPaths,
-            mediaEncoder.Object,
+            mediaEncoder ?? Mock.Of<IMediaEncoder>(),
             subtitleEncoder.Object,
             config.Object,
             configurationManager.Object,

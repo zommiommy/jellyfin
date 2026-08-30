@@ -1,5 +1,6 @@
 using System;
 using MediaBrowser.Model.Dto;
+using MediaBrowser.Model.MediaInfo;
 
 namespace MediaBrowser.Model.Dlna
 {
@@ -53,6 +54,21 @@ namespace MediaBrowser.Model.Dlna
         /// Gets or sets a value indicating whether always burn in subtitles when transcoding.
         /// </summary>
         public bool AlwaysBurnInSubtitleWhenTranscoding { get; set; }
+
+        /// <summary>
+        /// Gets or sets the requested video upscaling mode.
+        /// </summary>
+        public VideoUpscalingMode VideoUpscalingMode { get; set; }
+
+        /// <summary>
+        /// Gets or sets the exact video upscaling target width.
+        /// </summary>
+        public int? VideoUpscalingWidth { get; set; }
+
+        /// <summary>
+        /// Gets or sets the exact video upscaling target height.
+        /// </summary>
+        public int? VideoUpscalingHeight { get; set; }
 
         /// <summary>
         /// Gets or sets the item id.

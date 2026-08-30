@@ -1154,8 +1154,16 @@ namespace MediaBrowser.Controller.MediaEncoding
                     return string.Empty;
                 }
 
-                args.Append(GetCudaDeviceArgs(0, CudaAlias))
-                     .Append(GetFilterHwDeviceArgs(CudaAlias));
+                args.Append(GetCudaDeviceArgs(0, CudaAlias));
+                if (state.BaseRequest.VideoUpscalingMode != VideoUpscalingMode.None)
+                {
+                    args.Append(GetVulkanDeviceArgs(0, null, null, VulkanAlias))
+                        .Append(GetFilterHwDeviceArgs(VulkanAlias));
+                }
+                else
+                {
+                    args.Append(GetFilterHwDeviceArgs(CudaAlias));
+                }
             }
             else if (optHwaccelType == HardwareAccelerationType.amf)
             {
@@ -3027,12 +3035,15 @@ namespace MediaBrowser.Controller.MediaEncoding
         {
             var videoRequest = state.BaseRequest;
 
-            // Switch the incoming params to be ceilings rather than fixed values
-            videoRequest.MaxWidth = videoRequest.MaxWidth ?? videoRequest.Width;
-            videoRequest.MaxHeight = videoRequest.MaxHeight ?? videoRequest.Height;
+            if (videoRequest.VideoUpscalingMode == VideoUpscalingMode.None)
+            {
+                // Switch the incoming params to be ceilings rather than fixed values.
+                videoRequest.MaxWidth = videoRequest.MaxWidth ?? videoRequest.Width;
+                videoRequest.MaxHeight = videoRequest.MaxHeight ?? videoRequest.Height;
 
-            videoRequest.Width = null;
-            videoRequest.Height = null;
+                videoRequest.Width = null;
+                videoRequest.Height = null;
+            }
         }
 
         /// <summary>
@@ -3831,6 +3842,92 @@ namespace MediaBrowser.Controller.MediaEncoding
                 tonemapArg);
         }
 
+        private string GetVideoUpscalingFilter(EncodingJobInfo state, EncodingOptions options, string videoEncoder)
+        {
+            var mode = state.BaseRequest.VideoUpscalingMode;
+            if (mode == VideoUpscalingMode.None)
+            {
+                return null;
+            }
+
+            if (options.HardwareAccelerationType != HardwareAccelerationType.nvenc
+                || !videoEncoder.Contains("nvenc", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new NotSupportedException("Video upscaling currently requires an NVENC video encoder.");
+            }
+
+            if (!_mediaEncoder.SupportsHwaccel("vulkan")
+                || !_mediaEncoder.SupportsFilter("libplacebo")
+                || !_mediaEncoder.SupportsFilter("hwupload_cuda"))
+            {
+                throw new NotSupportedException("Video upscaling requires FFmpeg Vulkan, libplacebo, and hwupload_cuda support.");
+            }
+
+            if (state.VideoStream?.VideoRange == VideoRange.HDR)
+            {
+                throw new NotSupportedException("Video upscaling is not supported for HDR sources.");
+            }
+
+            var inputWidth = state.VideoStream?.Width;
+            var inputHeight = state.VideoStream?.Height;
+            var outputWidth = state.BaseRequest.Width;
+            var outputHeight = state.BaseRequest.Height;
+            if (!inputWidth.HasValue
+                || !inputHeight.HasValue
+                || !outputWidth.HasValue
+                || !outputHeight.HasValue
+                || outputWidth.Value <= inputWidth.Value
+                || outputHeight.Value <= inputHeight.Value)
+            {
+                throw new ArgumentException("Video upscaling requires an exact target width and height larger than the source dimensions.", nameof(state));
+            }
+
+            if (outputWidth is < 2 or > 4096
+                || outputHeight is < 2 or > 4096
+                || outputWidth.Value % 2 != 0
+                || outputHeight.Value % 2 != 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(state), "Video upscaling dimensions must be even values between 2 and 4096.");
+            }
+
+            var (constrainedWidth, constrainedHeight) = GetFixedOutputSize(
+                inputWidth,
+                inputHeight,
+                outputWidth,
+                outputHeight,
+                state.BaseRequest.MaxWidth,
+                state.BaseRequest.MaxHeight);
+            if (constrainedWidth != outputWidth || constrainedHeight != outputHeight)
+            {
+                throw new InvalidOperationException("The requested video upscaling dimensions exceed the client profile limits.");
+            }
+
+            var shaderFileName = mode switch
+            {
+                VideoUpscalingMode.Fsr => "FSR.glsl",
+                VideoUpscalingMode.Anime4KModeA => "Anime4K_Mode_A.glsl",
+                _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unsupported video upscaling mode.")
+            };
+
+            if (string.IsNullOrWhiteSpace(options.VideoUpscalingShaderDirectory))
+            {
+                throw new InvalidOperationException("The video upscaling shader directory is not configured.");
+            }
+
+            var shaderPath = Path.Combine(options.VideoUpscalingShaderDirectory, shaderFileName);
+            if (!File.Exists(shaderPath))
+            {
+                throw new FileNotFoundException("The configured video upscaling shader was not found.", shaderPath);
+            }
+
+            return string.Format(
+                CultureInfo.InvariantCulture,
+                "libplacebo=w={0}:h={1}:upscaler=none:downscaler=none:custom_shader_path='{2}'",
+                outputWidth.Value,
+                outputHeight.Value,
+                _mediaEncoder.EscapeSubtitleFilterPath(shaderPath));
+        }
+
         public string GetVideoTransposeDirection(EncodingJobInfo state)
         {
             return (state.VideoStream?.Rotation ?? 0) switch
@@ -3986,6 +4083,11 @@ namespace MediaBrowser.Controller.MediaEncoding
             var isSwDecoder = string.IsNullOrEmpty(vidDecoder);
             var isSwEncoder = !vidEncoder.Contains("nvenc", StringComparison.OrdinalIgnoreCase);
 
+            if (state.BaseRequest.VideoUpscalingMode != VideoUpscalingMode.None)
+            {
+                _ = GetVideoUpscalingFilter(state, options, vidEncoder);
+            }
+
             // legacy cuvid pipeline(copy-back)
             if ((isSwDecoder && isSwEncoder)
                 || !IsCudaFullSupported()
@@ -4018,6 +4120,7 @@ namespace MediaBrowser.Controller.MediaEncoding
             var isSwEncoder = !isNvencEncoder;
             var isMjpegEncoder = vidEncoder.Contains("mjpeg", StringComparison.OrdinalIgnoreCase);
             var isCuInCuOut = isNvDecoder && isNvencEncoder;
+            var videoUpscalingFilter = GetVideoUpscalingFilter(state, options, vidEncoder);
 
             var doubleRateDeint = options.DeinterlaceDoubleRate && (state.VideoStream?.ReferenceFrameRate ?? 60) <= 30;
             var doDeintH2645 = IsDeinterlaceAvailable(state);
@@ -4054,16 +4157,27 @@ namespace MediaBrowser.Controller.MediaEncoding
                     mainFilters.Add(swDeintFilter);
                 }
 
-                var outFormat = doCuTonemap ? "p010le" : "yuv420p";
-                var swScaleFilter = GetSwScaleFilter(state, options, vidEncoder, swpInW, swpInH, threeDFormat, reqW, reqH, reqMaxW, reqMaxH);
-                // sw scale
-                mainFilters.Add(swScaleFilter);
-                mainFilters.Add($"format={outFormat}");
-
-                // sw => hw
-                if (doCuTonemap)
+                if (videoUpscalingFilter is not null)
                 {
-                    mainFilters.Add("hwupload=derive_device=cuda");
+                    mainFilters.Add("format=nv12");
+                    mainFilters.Add("hwupload");
+                    mainFilters.Add(videoUpscalingFilter);
+                    mainFilters.Add("hwdownload");
+                    mainFilters.Add("format=nv12");
+                }
+                else
+                {
+                    var outFormat = doCuTonemap ? "p010le" : "yuv420p";
+                    var swScaleFilter = GetSwScaleFilter(state, options, vidEncoder, swpInW, swpInH, threeDFormat, reqW, reqH, reqMaxW, reqMaxH);
+                    // sw scale
+                    mainFilters.Add(swScaleFilter);
+                    mainFilters.Add($"format={outFormat}");
+
+                    // sw => hw
+                    if (doCuTonemap)
+                    {
+                        mainFilters.Add("hwupload=derive_device=cuda");
+                    }
                 }
             }
 
@@ -4083,11 +4197,24 @@ namespace MediaBrowser.Controller.MediaEncoding
                     mainFilters.Add($"transpose_cuda=dir={transposeDir}");
                 }
 
-                var isRext = IsVideoStreamHevcRext(state);
-                var outFormat = doCuTonemap ? (isRext ? "p010" : string.Empty) : "yuv420p";
-                var hwScaleFilter = GetHwScaleFilter("scale", "cuda", outFormat, false, swpInW, swpInH, reqW, reqH, reqMaxW, reqMaxH);
-                // hw scale
-                mainFilters.Add(hwScaleFilter);
+                if (videoUpscalingFilter is not null)
+                {
+                    mainFilters.Add("hwdownload");
+                    mainFilters.Add("format=nv12");
+                    mainFilters.Add("hwupload");
+                    mainFilters.Add(videoUpscalingFilter);
+                    mainFilters.Add("hwdownload");
+                    mainFilters.Add("format=nv12");
+                    mainFilters.Add("hwupload_cuda");
+                }
+                else
+                {
+                    var isRext = IsVideoStreamHevcRext(state);
+                    var outFormat = doCuTonemap ? (isRext ? "p010" : string.Empty) : "yuv420p";
+                    var hwScaleFilter = GetHwScaleFilter("scale", "cuda", outFormat, false, swpInW, swpInH, reqW, reqH, reqMaxW, reqMaxH);
+                    // hw scale
+                    mainFilters.Add(hwScaleFilter);
+                }
             }
 
             // hw tonemap

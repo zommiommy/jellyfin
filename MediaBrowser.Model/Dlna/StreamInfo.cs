@@ -166,6 +166,21 @@ public class StreamInfo
     public int? VideoBitrate { get; set; }
 
     /// <summary>
+    /// Gets or sets the exact output width.
+    /// </summary>
+    public int? Width { get; set; }
+
+    /// <summary>
+    /// Gets or sets the exact output height.
+    /// </summary>
+    public int? Height { get; set; }
+
+    /// <summary>
+    /// Gets or sets the requested video upscaling mode.
+    /// </summary>
+    public VideoUpscalingMode VideoUpscalingMode { get; set; }
+
+    /// <summary>
     /// Gets or sets the maximum output width.
     /// </summary>
     /// <value>The output width.</value>
@@ -950,6 +965,24 @@ public class StreamInfo
         {
             sb.Append("&AudioStreamIndex=");
             sb.Append(AudioStreamIndex.Value.ToString(CultureInfo.InvariantCulture));
+        }
+
+        if (Width.HasValue)
+        {
+            sb.Append("&Width=");
+            sb.Append(Width.Value.ToString(CultureInfo.InvariantCulture));
+        }
+
+        if (Height.HasValue)
+        {
+            sb.Append("&Height=");
+            sb.Append(Height.Value.ToString(CultureInfo.InvariantCulture));
+        }
+
+        if (VideoUpscalingMode != default)
+        {
+            sb.Append("&videoUpscalingMode=");
+            sb.Append(VideoUpscalingMode);
         }
 
         if (SubtitleStreamIndex.HasValue && (AlwaysBurnInSubtitleWhenTranscoding || SubtitleDeliveryMethod != SubtitleDeliveryMethod.External) && SubtitleStreamIndex != -1)

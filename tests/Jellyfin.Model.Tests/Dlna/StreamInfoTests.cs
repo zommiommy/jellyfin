@@ -222,6 +222,27 @@ public class StreamInfoTests
     }
 
     [Fact]
+    public void ToUrl_VideoUpscaling_SerializesExactTargetAndMode()
+    {
+        var streamInfo = new StreamInfo
+        {
+            ItemId = Guid.NewGuid(),
+            MediaType = DlnaProfileType.Video,
+            DeviceProfile = new DeviceProfile(),
+            Width = 3840,
+            Height = 2160,
+            VideoUpscalingMode = MediaBrowser.Model.MediaInfo.VideoUpscalingMode.Anime4KModeA
+        };
+
+        var queryString = streamInfo.ToUrl(BaseUrl, "123", null).Split('?', 2)[1];
+        var query = System.Web.HttpUtility.ParseQueryString(queryString);
+
+        Assert.Equal("3840", query["Width"]);
+        Assert.Equal("2160", query["Height"]);
+        Assert.Equal("Anime4KModeA", query["videoUpscalingMode"]);
+    }
+
+    [Fact]
     public void Fuzzy_Comparison()
     {
         var streamInfo = new LegacyStreamInfo(Guid.Empty, DlnaProfileType.Video)

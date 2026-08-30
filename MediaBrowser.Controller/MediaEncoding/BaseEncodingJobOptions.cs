@@ -5,6 +5,7 @@
 using System;
 using System.Collections.Generic;
 using MediaBrowser.Model.Dlna;
+using MediaBrowser.Model.MediaInfo;
 
 namespace MediaBrowser.Controller.MediaEncoding
 {
@@ -124,6 +125,11 @@ namespace MediaBrowser.Controller.MediaEncoding
         /// </summary>
         /// <value>The height.</value>
         public int? Height { get; set; }
+
+        /// <summary>
+        /// Gets or sets the requested video upscaling mode.
+        /// </summary>
+        public VideoUpscalingMode VideoUpscalingMode { get; set; }
 
         /// <summary>
         /// Gets or sets the width of the max.

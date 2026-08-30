@@ -177,6 +177,9 @@ public class MediaInfoHelper
     /// <param name="enableTranscoding">Enable transcoding.</param>
     /// <param name="allowVideoStreamCopy">Allow video stream copy.</param>
     /// <param name="allowAudioStreamCopy">Allow audio stream copy.</param>
+    /// <param name="videoUpscalingMode">Requested video upscaling mode.</param>
+    /// <param name="videoUpscalingWidth">Exact video upscaling target width.</param>
+    /// <param name="videoUpscalingHeight">Exact video upscaling target height.</param>
     /// <param name="alwaysBurnInSubtitleWhenTranscoding">Always burn-in subtitle when transcoding.</param>
     /// <param name="ipAddress">Requesting IP address.</param>
     public void SetDeviceSpecificData(
@@ -197,6 +200,9 @@ public class MediaInfoHelper
         bool enableTranscoding,
         bool allowVideoStreamCopy,
         bool allowAudioStreamCopy,
+        VideoUpscalingMode videoUpscalingMode,
+        int? videoUpscalingWidth,
+        int? videoUpscalingHeight,
         bool alwaysBurnInSubtitleWhenTranscoding,
         IPAddress ipAddress)
     {
@@ -213,6 +219,9 @@ public class MediaInfoHelper
             AllowAudioStreamCopy = allowAudioStreamCopy,
             AllowVideoStreamCopy = allowVideoStreamCopy,
             AlwaysBurnInSubtitleWhenTranscoding = alwaysBurnInSubtitleWhenTranscoding,
+            VideoUpscalingMode = videoUpscalingMode,
+            VideoUpscalingWidth = videoUpscalingWidth,
+            VideoUpscalingHeight = videoUpscalingHeight,
         };
 
         if (string.Equals(mediaSourceId, mediaSource.Id, StringComparison.OrdinalIgnoreCase))
@@ -462,6 +471,9 @@ public class MediaInfoHelper
                 true,
                 true,
                 true,
+                request.VideoUpscalingMode,
+                request.VideoUpscalingWidth,
+                request.VideoUpscalingHeight,
                 request.AlwaysBurnInSubtitleWhenTranscoding,
                 httpContext.GetNormalizedRemoteIP());
         }

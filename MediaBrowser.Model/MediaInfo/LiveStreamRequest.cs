@@ -43,6 +43,12 @@ namespace MediaBrowser.Model.MediaInfo
 
         public bool AlwaysBurnInSubtitleWhenTranscoding { get; set; }
 
+        public VideoUpscalingMode VideoUpscalingMode { get; set; }
+
+        public int? VideoUpscalingWidth { get; set; }
+
+        public int? VideoUpscalingHeight { get; set; }
+
         public IReadOnlyList<MediaProtocol> DirectPlayProtocols { get; set; }
     }
 }

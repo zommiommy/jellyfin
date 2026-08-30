@@ -17,6 +17,7 @@ using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Controller.Streaming;
 using MediaBrowser.Model.Dlna;
 using MediaBrowser.Model.Dto;
+using MediaBrowser.Model.MediaInfo;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Net.Http.Headers;
 
@@ -62,6 +63,16 @@ public static class StreamingHelpers
         }
 
         streamingRequest.StreamOptions = ParseStreamOptions(httpRequest.Query);
+        if (streamingRequest.StreamOptions.TryGetValue("videoUpscalingMode", out var videoUpscalingMode))
+        {
+            if (!Enum.TryParse<VideoUpscalingMode>(videoUpscalingMode, true, out var parsedMode)
+                || !Enum.IsDefined(parsedMode))
+            {
+                throw new ArgumentException($"Invalid video upscaling mode '{videoUpscalingMode}'.", nameof(streamingRequest));
+            }
+
+            streamingRequest.VideoUpscalingMode = parsedMode;
+        }
         if (httpRequest.Path.Value is null)
         {
             throw new ResourceNotFoundException(nameof(httpRequest.Path));

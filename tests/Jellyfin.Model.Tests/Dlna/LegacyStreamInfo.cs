@@ -109,6 +109,9 @@ public class LegacyStreamInfo : StreamInfo
         list.Add(new NameValuePair("VideoCodec", videoCodecs));
         list.Add(new NameValuePair("AudioCodec", audioCodecs));
         list.Add(new NameValuePair("AudioStreamIndex", item.AudioStreamIndex.HasValue ? item.AudioStreamIndex.Value.ToString(CultureInfo.InvariantCulture) : string.Empty));
+        list.Add(new NameValuePair("Width", item.Width.HasValue ? item.Width.Value.ToString(CultureInfo.InvariantCulture) : string.Empty));
+        list.Add(new NameValuePair("Height", item.Height.HasValue ? item.Height.Value.ToString(CultureInfo.InvariantCulture) : string.Empty));
+        list.Add(new NameValuePair("videoUpscalingMode", item.VideoUpscalingMode == default ? string.Empty : item.VideoUpscalingMode.ToString()));
         list.Add(new NameValuePair("SubtitleStreamIndex", item.SubtitleStreamIndex.HasValue && (item.AlwaysBurnInSubtitleWhenTranscoding || item.SubtitleDeliveryMethod != SubtitleDeliveryMethod.External) ? item.SubtitleStreamIndex.Value.ToString(CultureInfo.InvariantCulture) : string.Empty));
         list.Add(new NameValuePair("VideoBitrate", item.VideoBitrate.HasValue ? item.VideoBitrate.Value.ToString(CultureInfo.InvariantCulture) : string.Empty));
         list.Add(new NameValuePair("AudioBitrate", item.AudioBitrate.HasValue ? item.AudioBitrate.Value.ToString(CultureInfo.InvariantCulture) : string.Empty));

@@ -656,7 +656,10 @@ namespace MediaBrowser.Model.Dlna
                 Context = options.Context,
                 DeviceProfile = options.Profile,
                 SubtitleStreamIndex = options.SubtitleStreamIndex ?? GetDefaultSubtitleStreamIndex(item, options.Profile.SubtitleProfiles),
-                AlwaysBurnInSubtitleWhenTranscoding = options.AlwaysBurnInSubtitleWhenTranscoding
+                AlwaysBurnInSubtitleWhenTranscoding = options.AlwaysBurnInSubtitleWhenTranscoding,
+                Width = options.VideoUpscalingWidth,
+                Height = options.VideoUpscalingHeight,
+                VideoUpscalingMode = options.VideoUpscalingMode
             };
 
             var subtitleStream = playlistItem.SubtitleStreamIndex.HasValue ? item.GetMediaStream(MediaStreamType.Subtitle, playlistItem.SubtitleStreamIndex.Value) : null;
