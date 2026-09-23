@@ -486,6 +486,35 @@ public class EncodingHelperTests
     [InlineData(false, true)]
     [InlineData(true, false)]
     [InlineData(true, true)]
+    public void GetNvidiaVidFiltersPrefered_RtxVideo_KeepsSourceColorTagsForTheInputMatrix(bool softwareDecoder, bool trueHdr)
+    {
+        var directory = CreateRtxModels();
+        try
+        {
+            var state = BuildRtxState(1280, 720, 3840, 2160, VideoUpscalingMode.NvidiaVsrQHigh, trueHdr);
+            state.VideoStream!.ColorSpace = "smpte170m";
+            state.VideoStream.ColorPrimaries = "smpte170m";
+            state.VideoStream.ColorTransfer = "smpte170m";
+            var filters = CreateHelper(CreateRtxEncoder().Object).GetNvidiaVidFiltersPrefered(
+                state,
+                new EncodingOptions { HardwareAccelerationType = HardwareAccelerationType.nvenc, NvidiaRtxVideoModelDirectory = directory.FullName },
+                softwareDecoder ? string.Empty : "h264_cuda",
+                trueHdr ? "hevc_nvenc" : "h264_nvenc");
+
+            // rtxvideo_cuda picks its YUV to RGB matrix from the frame tags; a retag would change the decoded colors.
+            Assert.DoesNotContain(filters.MainFilters, filter => filter.StartsWith("setparams", StringComparison.Ordinal));
+        }
+        finally
+        {
+            directory.Delete(true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
     public void GetNvidiaVidFiltersPrefered_RtxVideo_CompositesSubtitlesInTheCorrectColorSpace(bool softwareDecoder, bool trueHdr)
     {
         var directory = CreateRtxModels();

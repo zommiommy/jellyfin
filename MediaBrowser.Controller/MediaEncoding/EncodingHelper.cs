@@ -3987,7 +3987,9 @@ namespace MediaBrowser.Controller.MediaEncoding
             }
 
             var cudaInput = videoDecoder.Contains("cuda", StringComparison.OrdinalIgnoreCase);
-            var mainFilters = new List<string> { GetOverwriteColorPropertiesParam(state, false) };
+            // No setparams retag: rtxvideo_cuda converts YUV to RGB with the frame's own matrix
+            // (guessing only when untagged) and tags its output itself.
+            var mainFilters = new List<string>();
             var subFilters = new List<string>();
             var overlayFilters = new List<string>();
             if (IsDeinterlaceAvailable(state))
