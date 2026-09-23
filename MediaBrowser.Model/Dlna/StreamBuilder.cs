@@ -659,7 +659,12 @@ namespace MediaBrowser.Model.Dlna
                 AlwaysBurnInSubtitleWhenTranscoding = options.AlwaysBurnInSubtitleWhenTranscoding,
                 Width = options.VideoUpscalingWidth,
                 Height = options.VideoUpscalingHeight,
-                VideoUpscalingMode = options.VideoUpscalingMode
+                VideoUpscalingMode = options.VideoUpscalingMode,
+                VideoTrueHdr = options.VideoTrueHdr,
+                VideoTrueHdrPeakBrightness = options.VideoTrueHdrPeakBrightness,
+                VideoTrueHdrContrast = options.VideoTrueHdrContrast,
+                VideoTrueHdrSaturation = options.VideoTrueHdrSaturation,
+                VideoTrueHdrMiddleGray = options.VideoTrueHdrMiddleGray
             };
 
             var subtitleStream = playlistItem.SubtitleStreamIndex.HasValue ? item.GetMediaStream(MediaStreamType.Subtitle, playlistItem.SubtitleStreamIndex.Value) : null;
@@ -711,8 +716,8 @@ namespace MediaBrowser.Model.Dlna
             var videoStream = item.VideoStream;
 
             var bitrateLimitExceeded = IsBitrateLimitExceeded(item, options.GetMaxBitrate(false) ?? 0);
-            var isEligibleForDirectPlay = options.EnableDirectPlay && (options.ForceDirectPlay || !bitrateLimitExceeded);
-            var isEligibleForDirectStream = options.EnableDirectStream && (options.ForceDirectStream || !bitrateLimitExceeded);
+            var isEligibleForDirectPlay = !options.VideoTrueHdr && options.EnableDirectPlay && (options.ForceDirectPlay || !bitrateLimitExceeded);
+            var isEligibleForDirectStream = !options.VideoTrueHdr && options.EnableDirectStream && (options.ForceDirectStream || !bitrateLimitExceeded);
             TranscodeReason transcodeReasons = 0;
 
             // Force transcode or remux for BD/DVD folders
@@ -823,6 +828,14 @@ namespace MediaBrowser.Model.Dlna
                 }
             }
 
+            if (options.VideoTrueHdr)
+            {
+                playlistItem.VideoCodecs = ["hevc"];
+                playlistItem.SetOption("hevc", "profile", "main10");
+                playlistItem.SetOption("hevc", "videobitdepth", "10");
+                playlistItem.SetOption("hevc", "rangetype", "HDR10");
+            }
+
             _logger.LogDebug(
                 "StreamBuilder.BuildVideoItem( Profile={0}, Path={1}, AudioStreamIndex={2}, SubtitleStreamIndex={3} ) => ( PlayMethod={4}, TranscodeReason={5} ) {6}",
                 options.Profile.Name ?? "Anonymous Profile",
@@ -856,7 +869,13 @@ namespace MediaBrowser.Model.Dlna
             var transcodingProfiles = options.Profile.TranscodingProfiles
                 .Where(i => i.Type == playlistItem.MediaType && i.Context == options.Context);
 
-            if (item.UseMostCompatibleTranscodingProfile)
+            if (options.VideoTrueHdr)
+            {
+                transcodingProfiles = transcodingProfiles.Where(i => i.Protocol == MediaStreamProtocol.hls
+                    && string.Equals(i.Container, "mp4", StringComparison.OrdinalIgnoreCase)
+                    && ContainerHelper.ContainsContainer(i.VideoCodec, false, "hevc"));
+            }
+            else if (item.UseMostCompatibleTranscodingProfile)
             {
                 transcodingProfiles = transcodingProfiles.Where(i => string.Equals(i.Container, "ts", StringComparison.OrdinalIgnoreCase));
             }
@@ -873,6 +892,7 @@ namespace MediaBrowser.Model.Dlna
 
                     if (videoStream is not null
                         && options.AllowVideoStreamCopy
+                        && !options.VideoTrueHdr
                         && ContainerHelper.ContainsContainer(transcodingProfile.VideoCodec, videoCodec))
                     {
                         var failures = GetCompatibilityVideoCodec(options, mediaSource, container, videoStream);
@@ -937,6 +957,10 @@ namespace MediaBrowser.Model.Dlna
         {
             // Prefer matching video codecs
             var videoCodecs = ContainerHelper.Split(videoCodec).ToList();
+            if (options.VideoTrueHdr)
+            {
+                videoCodecs = ["hevc"];
+            }
 
             if (videoCodecs.Count == 0 && videoStream is not null)
             {
@@ -1044,13 +1068,13 @@ namespace MediaBrowser.Model.Dlna
                 }
             }
 
-            int? width = videoStream?.Width;
-            int? height = videoStream?.Height;
-            int? bitDepth = videoStream?.BitDepth;
+            int? width = options.VideoTrueHdr ? playlistItem.Width ?? videoStream?.Width : videoStream?.Width;
+            int? height = options.VideoTrueHdr ? playlistItem.Height ?? videoStream?.Height : videoStream?.Height;
+            int? bitDepth = options.VideoTrueHdr ? 10 : videoStream?.BitDepth;
             int? videoBitrate = videoStream?.BitRate;
             double? videoLevel = videoStream?.Level;
-            string? videoProfile = videoStream?.Profile;
-            VideoRangeType? videoRangeType = videoStream?.VideoRangeType;
+            string? videoProfile = options.VideoTrueHdr ? "main10" : videoStream?.Profile;
+            VideoRangeType? videoRangeType = options.VideoTrueHdr ? VideoRangeType.HDR10 : videoStream?.VideoRangeType;
             float videoFramerate = videoStream is null ? 0 : videoStream.ReferenceFrameRate ?? 0;
             bool? isAnamorphic = videoStream?.IsAnamorphic;
             bool? isInterlaced = videoStream?.IsInterlaced;

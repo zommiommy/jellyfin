@@ -230,7 +230,7 @@ public class DynamicHlsHelper
 
         var basicPlaylist = AppendPlaylist(builder, state, playlistUrl, totalBitrate, subtitleGroup);
 
-        if (state.VideoStream is not null && state.VideoRequest is not null)
+        if (state.VideoStream is not null && state.VideoRequest is not null && !state.BaseRequest.VideoTrueHdr)
         {
             var encodingOptions = _serverConfigurationManager.GetEncodingOptions();
 
@@ -441,6 +441,12 @@ public class DynamicHlsHelper
     /// <param name="state">StreamState of the current stream.</param>
     private void AppendPlaylistVideoRangeField(StringBuilder builder, StreamState state)
     {
+        if (state.BaseRequest.VideoTrueHdr && !EncodingHelper.IsCopyCodec(state.OutputVideoCodec))
+        {
+            builder.Append(",VIDEO-RANGE=PQ");
+            return;
+        }
+
         if (state.VideoStream is not null && state.VideoStream.VideoRange != VideoRange.Unknown)
         {
             var videoRange = state.VideoStream.VideoRange;
@@ -468,7 +474,6 @@ public class DynamicHlsHelper
             }
             else
             {
-                // Currently we only encode to SDR.
                 builder.Append(",VIDEO-RANGE=SDR");
             }
         }
@@ -801,6 +806,13 @@ public class DynamicHlsHelper
             && !string.IsNullOrEmpty(state.VideoStream.Profile))
         {
             profileString = state.VideoStream.Profile;
+        }
+        else if (state.BaseRequest.VideoTrueHdr
+                 && !EncodingHelper.IsCopyCodec(state.OutputVideoCodec)
+                 && (string.Equals(codec, "h265", StringComparison.OrdinalIgnoreCase)
+                     || string.Equals(codec, "hevc", StringComparison.OrdinalIgnoreCase)))
+        {
+            profileString = "main10";
         }
         else if (!string.IsNullOrEmpty(codec))
         {

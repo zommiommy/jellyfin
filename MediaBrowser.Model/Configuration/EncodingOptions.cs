@@ -59,6 +59,7 @@ public class EncodingOptions
         AllowHevcEncoding = false;
         AllowAv1Encoding = false;
         VideoUpscalingShaderDirectory = string.Empty;
+        NvidiaRtxVideoModelDirectory = string.Empty;
         EnableSubtitleExtraction = true;
         SubtitleExtractionTimeoutMinutes = 30;
         AllowOnDemandMetadataBasedKeyframeExtractionForExtensions = ["mkv"];
@@ -290,6 +291,11 @@ public class EncodingOptions
     /// Gets or sets the directory containing server-approved mpv hook shaders used for video upscaling.
     /// </summary>
     public string VideoUpscalingShaderDirectory { get; set; }
+
+    /// <summary>
+    /// Gets or sets the directory containing NVIDIA RTX Video models.
+    /// </summary>
+    public string NvidiaRtxVideoModelDirectory { get; set; }
 
     /// <summary>
     /// Gets or sets a value indicating whether subtitle extraction is enabled.

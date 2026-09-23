@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Jellyfin.Data.Enums;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.IO;
@@ -403,6 +404,307 @@ public class EncodingHelperTests
         {
             shaderDirectory.Delete(true);
         }
+    }
+
+    [Theory]
+    [InlineData(1920, 1080, 3840, 2160, VideoUpscalingMode.NvidiaVsrQUltra, "qultra", 2, false, false)]
+    [InlineData(1280, 720, 3840, 2160, VideoUpscalingMode.NvidiaVsrLow, "low", 2, false, false)]
+    [InlineData(720, 480, 2880, 2160, VideoUpscalingMode.NvidiaVsrUltra, "ultra", 4, true, false)]
+    [InlineData(1920, 1080, 1920, 1080, VideoUpscalingMode.None, "none", 1, false, true)]
+    [InlineData(1280, 720, 3840, 2160, VideoUpscalingMode.NvidiaVsrQHigh, "qhigh", 3, false, true)]
+    [InlineData(640, 480, 2560, 1920, VideoUpscalingMode.NvidiaVsrHigh, "high", 4, false, false)]
+    [InlineData(1280, 720, 1920, 1080, VideoUpscalingMode.NvidiaVsrMedium, "medium", 2, true, false)]
+    [InlineData(1280, 720, 1920, 1080, VideoUpscalingMode.NvidiaVsrQLow, "qlow", 2, false, false)]
+    [InlineData(1280, 720, 1920, 1080, VideoUpscalingMode.NvidiaVsrQMedium, "qmedium", 2, false, false)]
+    [InlineData(1280, 720, 1920, 1080, VideoUpscalingMode.NvidiaVsrHigh, "high", 2, false, true)]
+    public void GetNvidiaVidFiltersPrefered_RtxVideo_SelectsNativeHeadAndExactOutput(
+        int width,
+        int height,
+        int outputWidth,
+        int outputHeight,
+        VideoUpscalingMode mode,
+        string model,
+        int scale,
+        bool softwareDecoder,
+        bool trueHdr)
+    {
+        var directory = CreateRtxModels();
+        try
+        {
+            var encoder = CreateRtxEncoder();
+            var helper = CreateHelper(encoder.Object);
+            var state = BuildRtxState(width, height, outputWidth, outputHeight, mode, trueHdr);
+            if (width == 720 && height == 480)
+            {
+                state.VideoStream!.AspectRatio = "4:3";
+                state.VideoStream.IsAnamorphic = true;
+            }
+
+            var options = new EncodingOptions { HardwareAccelerationType = HardwareAccelerationType.nvenc, NvidiaRtxVideoModelDirectory = directory.FullName };
+            var codec = trueHdr ? "hevc_nvenc" : "h264_nvenc";
+            var filters = helper.GetNvidiaVidFiltersPrefered(state, options, softwareDecoder ? string.Empty : "h264_cuda", codec);
+            var actual = string.Join(',', filters.MainFilters.Where(filter => !string.IsNullOrEmpty(filter)));
+            var expected = softwareDecoder ? "format=nv12,hwupload_cuda," : string.Empty;
+            expected += "rtxvideo_cuda=";
+            if (mode != VideoUpscalingMode.None)
+            {
+                expected += $"vsr_models='{directory.FullName}/vsr.zip':";
+            }
+
+            expected += $"vsr={model}:scale={scale}";
+            if (trueHdr)
+            {
+                expected += $":truehdr_models='{directory.FullName}/truehdr.zip':truehdr=1:truehdr_peak=1000:truehdr_contrast=100:truehdr_saturation=100:truehdr_middle_gray=50";
+            }
+
+            expected += $",scale_cuda=w={outputWidth}:h={outputHeight}:interp_algo=lanczos:format={(trueHdr ? "p010" : "yuv420p")}";
+            if (mode != VideoUpscalingMode.None)
+            {
+                expected += ",setsar=1";
+            }
+
+            Assert.EndsWith(expected, actual, StringComparison.Ordinal);
+            Assert.DoesNotContain("hwdownload", actual, StringComparison.Ordinal);
+            Assert.DoesNotContain("libplacebo", actual, StringComparison.Ordinal);
+            Assert.Empty(filters.OverlayFilters);
+            var quality = helper.GetVideoQualityParam(state, codec, options, EncoderPreset.veryfast);
+            if (trueHdr)
+            {
+                Assert.Contains("-profile:v:0 main10", quality, StringComparison.Ordinal);
+            }
+
+            TestContext.Current.TestOutputHelper!.WriteLine($"{width}x{height} {model} software={softwareDecoder} truehdr={trueHdr}: {actual.Replace(directory.FullName, "/models", StringComparison.Ordinal)}; -c:v {codec}{quality}");
+        }
+        finally
+        {
+            directory.Delete(true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void GetNvidiaVidFiltersPrefered_RtxVideo_CompositesSubtitlesInTheCorrectColorSpace(bool softwareDecoder, bool trueHdr)
+    {
+        var directory = CreateRtxModels();
+        try
+        {
+            var state = BuildRtxState(1280, 720, 3840, 2160, VideoUpscalingMode.NvidiaVsrQHigh, trueHdr);
+            state.SubtitleStream = new MediaStream { Type = MediaStreamType.Subtitle, Codec = "hdmv_pgs_subtitle", Width = 1920, Height = 1080 };
+            state.SubtitleDeliveryMethod = SubtitleDeliveryMethod.Encode;
+            var options = new EncodingOptions { HardwareAccelerationType = HardwareAccelerationType.nvenc, NvidiaRtxVideoModelDirectory = directory.FullName };
+            var filters = CreateHelper(CreateRtxEncoder().Object).GetNvidiaVidFiltersPrefered(state, options, softwareDecoder ? string.Empty : "h264_cuda", trueHdr ? "hevc_nvenc" : "h264_nvenc");
+            if (trueHdr)
+            {
+                Assert.Equal(!softwareDecoder, filters.MainFilters.Contains("hwdownload"));
+                Assert.Contains(filters.SubFilters, filter => filter.Contains("1280", StringComparison.Ordinal) && filter.Contains("720", StringComparison.Ordinal));
+                Assert.Equal("overlay=eof_action=pass:repeatlast=0", filters.OverlayFilters[0]);
+                Assert.Equal("format=nv12", filters.OverlayFilters[1]);
+                Assert.Equal("hwupload_cuda", filters.OverlayFilters[2]);
+                Assert.StartsWith("rtxvideo_cuda=", filters.OverlayFilters[3], StringComparison.Ordinal);
+                Assert.Contains("format=p010", filters.OverlayFilters[4], StringComparison.Ordinal);
+            }
+            else
+            {
+                Assert.DoesNotContain("hwdownload", filters.MainFilters);
+                Assert.Contains(filters.MainFilters, filter => filter.StartsWith("rtxvideo_cuda=", StringComparison.Ordinal));
+                Assert.Contains(filters.MainFilters, filter => filter.Contains("scale_cuda=w=3840:h=2160", StringComparison.Ordinal));
+                Assert.Contains(filters.SubFilters, filter => filter.Contains("3840", StringComparison.Ordinal) && filter.Contains("2160", StringComparison.Ordinal));
+                Assert.Equal("overlay_cuda=eof_action=pass:repeatlast=0", Assert.Single(filters.OverlayFilters));
+            }
+
+            TestContext.Current.TestOutputHelper!.WriteLine($"software={softwareDecoder} truehdr={trueHdr}; main={string.Join(',', filters.MainFilters)}; sub={string.Join(',', filters.SubFilters)}; overlay={string.Join(',', filters.OverlayFilters)}");
+        }
+        finally
+        {
+            directory.Delete(true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void GetNvidiaVidFiltersPrefered_RtxVideo_BurnsTextBeforeTrueHdrButAfterSdrUpscaling(bool trueHdr, bool softwareDecoder)
+    {
+        var directory = CreateRtxModels();
+        try
+        {
+            var state = BuildRtxState(1920, 1080, 3840, 2160, VideoUpscalingMode.NvidiaVsrQUltra, trueHdr);
+            state.SubtitleStream = new MediaStream { Type = MediaStreamType.Subtitle, Codec = "srt", IsExternal = true, Path = "/media/test.srt" };
+            state.SubtitleDeliveryMethod = SubtitleDeliveryMethod.Encode;
+            var filters = CreateHelper(CreateRtxEncoder().Object).GetNvidiaVidFiltersPrefered(
+                state,
+                new EncodingOptions { HardwareAccelerationType = HardwareAccelerationType.nvenc, NvidiaRtxVideoModelDirectory = directory.FullName },
+                softwareDecoder ? string.Empty : "h264_cuda",
+                trueHdr ? "hevc_nvenc" : "h264_nvenc");
+            var actual = string.Join(',', filters.MainFilters.Where(filter => !string.IsNullOrEmpty(filter)));
+            if (trueHdr)
+            {
+                Assert.Contains("subtitles=f='/media/test.srt',setpts=PTS -0/TB,format=nv12,hwupload_cuda,rtxvideo_cuda=", actual, StringComparison.Ordinal);
+                Assert.Contains("format=p010", actual, StringComparison.Ordinal);
+            }
+            else
+            {
+                Assert.DoesNotContain("subtitles=", actual, StringComparison.Ordinal);
+                Assert.DoesNotContain("hwdownload", actual, StringComparison.Ordinal);
+                Assert.Contains("scale_cuda=w=3840:h=2160:interp_algo=lanczos:format=yuv420p", actual, StringComparison.Ordinal);
+                Assert.Contains(filters.SubFilters, filter => filter.StartsWith("alphasrc=", StringComparison.Ordinal) && filter.Contains("3840x2160", StringComparison.Ordinal));
+                Assert.Contains(filters.SubFilters, filter => filter.Contains("subtitles=f='/media/test.srt':alpha=1:sub2video=1", StringComparison.Ordinal));
+                Assert.Equal("overlay_cuda=eof_action=pass:repeatlast=0", Assert.Single(filters.OverlayFilters));
+            }
+
+            TestContext.Current.TestOutputHelper!.WriteLine($"software={softwareDecoder} truehdr={trueHdr}; main={actual}; sub={string.Join(',', filters.SubFilters)}; overlay={string.Join(',', filters.OverlayFilters)}");
+        }
+        finally
+        {
+            directory.Delete(true);
+        }
+    }
+
+    [Fact]
+    public void GetNvidiaVidFiltersPrefered_RtxVideo_AppliesControlsAndIgnoresLibplaceboOptions()
+    {
+        var directory = CreateRtxModels();
+        try
+        {
+            var state = BuildRtxState(1280, 720, 3840, 2160, VideoUpscalingMode.NvidiaVsrQHigh, true);
+            state.BaseRequest.StreamOptions["videoTrueHdrPeakBrightness"] = "1600";
+            state.BaseRequest.StreamOptions["videoTrueHdrContrast"] = "0";
+            state.BaseRequest.StreamOptions["videoTrueHdrSaturation"] = "200";
+            state.BaseRequest.StreamOptions["videoTrueHdrMiddleGray"] = "10";
+            state.BaseRequest.StreamOptions["videoUpscalingScaler"] = "not-a-scaler";
+            var filters = CreateHelper(CreateRtxEncoder().Object).GetNvidiaVidFiltersPrefered(
+                state,
+                new EncodingOptions { HardwareAccelerationType = HardwareAccelerationType.nvenc, NvidiaRtxVideoModelDirectory = directory.FullName },
+                "h264_cuda",
+                "hevc_nvenc");
+            Assert.Contains(filters.MainFilters, filter => filter.Contains(":truehdr_peak=1600:truehdr_contrast=0:truehdr_saturation=200:truehdr_middle_gray=10", StringComparison.Ordinal));
+        }
+        finally
+        {
+            directory.Delete(true);
+        }
+    }
+
+    [Fact]
+    public void GetNvidiaVidFiltersPrefered_RtxVideo_ReportsMissingPack()
+    {
+        var directory = Directory.CreateTempSubdirectory("jellyfin-missing-rtx-");
+        try
+        {
+            var state = BuildRtxState(1920, 1080, 3840, 2160, VideoUpscalingMode.NvidiaVsrUltra, false);
+            var exception = Assert.Throws<FileNotFoundException>(() => CreateHelper(CreateRtxEncoder().Object).GetNvidiaVidFiltersPrefered(
+                state,
+                new EncodingOptions { HardwareAccelerationType = HardwareAccelerationType.nvenc, NvidiaRtxVideoModelDirectory = directory.FullName },
+                "h264_cuda",
+                "h264_nvenc"));
+            Assert.Equal(Path.Combine(directory.FullName, "vsr.zip"), exception.FileName);
+        }
+        finally
+        {
+            directory.Delete(true);
+        }
+    }
+
+    [Theory]
+    [InlineData("h264_nvenc", false)]
+    [InlineData("libx264", true)]
+    public void GetNvidiaVidFilterChain_RtxVideo_RejectsMissingCapabilityInsteadOfSkippingEnhancement(string codec, bool supportsFilter)
+    {
+        var encoder = CreateRtxEncoder();
+        encoder.Setup(value => value.SupportsFilter("rtxvideo_cuda")).Returns(supportsFilter);
+        var state = BuildRtxState(1920, 1080, 3840, 2160, VideoUpscalingMode.NvidiaVsrQUltra, false);
+        Assert.Throws<NotSupportedException>(() => CreateHelper(encoder.Object).GetNvidiaVidFilterChain(state, new EncodingOptions { HardwareAccelerationType = HardwareAccelerationType.nvenc }, codec));
+    }
+
+    [Fact]
+    public void GetInputVideoHwaccelArgs_RtxVideo_InitializesOnlyCuda()
+    {
+        var encoder = CreateRtxEncoder();
+        encoder.Setup(value => value.SupportsEncoder("h264_nvenc")).Returns(true);
+        encoder.Setup(value => value.SupportsHwaccel("cuda")).Returns(true);
+        encoder.Setup(value => value.SupportsFilter("yadif_cuda")).Returns(true);
+        encoder.Setup(value => value.SupportsFilter("overlay_cuda")).Returns(true);
+        encoder.Setup(value => value.SupportsFilterWithOption(FilterOptionType.ScaleCudaFormat)).Returns(true);
+        encoder.Setup(value => value.SupportsFilterWithOption(FilterOptionType.TonemapCudaName)).Returns(true);
+        var state = BuildRtxState(1920, 1080, 3840, 2160, VideoUpscalingMode.NvidiaVsrQUltra, false);
+        state.VideoType = VideoType.VideoFile;
+        var args = CreateHelper(encoder.Object).GetInputVideoHwaccelArgs(state, new EncodingOptions { HardwareAccelerationType = HardwareAccelerationType.nvenc });
+        Assert.Contains("-init_hw_device cuda=", args, StringComparison.Ordinal);
+        Assert.Contains("-filter_hw_device", args, StringComparison.Ordinal);
+        Assert.DoesNotContain("vulkan", args, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void GetNvidiaVidFiltersPrefered_RtxVideo_RotatesBeforeSelectingAndRunningTheNativeHead()
+    {
+        var directory = CreateRtxModels();
+        try
+        {
+            var encoder = CreateRtxEncoder();
+            encoder.Setup(value => value.SupportsFilter("transpose_cuda")).Returns(true);
+            var state = BuildRtxState(1080, 1920, 3840, 2160, VideoUpscalingMode.NvidiaVsrQUltra, false);
+            state.VideoStream!.Rotation = 90;
+            var filters = CreateHelper(encoder.Object).GetNvidiaVidFiltersPrefered(
+                state,
+                new EncodingOptions { HardwareAccelerationType = HardwareAccelerationType.nvenc, NvidiaRtxVideoModelDirectory = directory.FullName },
+                "h264_cuda",
+                "h264_nvenc");
+            var filter = string.Join(',', filters.MainFilters.Where(value => !string.IsNullOrEmpty(value)));
+            Assert.Contains("transpose_cuda=dir=cclock,rtxvideo_cuda=", filter, StringComparison.Ordinal);
+            Assert.Contains(":vsr=qultra:scale=2,scale_cuda=w=3840:h=2160", filter, StringComparison.Ordinal);
+        }
+        finally
+        {
+            directory.Delete(true);
+        }
+    }
+
+    [Fact]
+    public void CanStreamCopyVideo_TrueHdr_DisallowsCopyEvenForCompatibleHevc()
+    {
+        var state = BuildRtxState(1920, 1080, 1920, 1080, VideoUpscalingMode.None, true);
+        state.VideoStream!.Codec = "hevc";
+        state.BaseRequest.AllowVideoStreamCopy = true;
+        Assert.False(CreateHelper().CanStreamCopyVideo(state, state.VideoStream));
+    }
+
+    private static DirectoryInfo CreateRtxModels()
+    {
+        var directory = Directory.CreateTempSubdirectory("jellyfin-rtx-");
+        File.WriteAllBytes(Path.Combine(directory.FullName, "vsr.zip"), []);
+        File.WriteAllBytes(Path.Combine(directory.FullName, "truehdr.zip"), []);
+        return directory;
+    }
+
+    private static Mock<IMediaEncoder> CreateRtxEncoder()
+    {
+        var encoder = new Mock<IMediaEncoder>();
+        encoder.Setup(i => i.SupportsFilter("rtxvideo_cuda")).Returns(true);
+        encoder.Setup(i => i.SupportsFilter("hwupload_cuda")).Returns(true);
+        encoder.Setup(i => i.EscapeSubtitleFilterPath(It.IsAny<string>())).Returns((string path) => path);
+        return encoder;
+    }
+
+    private static EncodingJobInfo BuildRtxState(int width, int height, int outputWidth, int outputHeight, VideoUpscalingMode mode, bool trueHdr)
+    {
+        var state = BuildState(null, null);
+        state.VideoStream!.Width = width;
+        state.VideoStream.Height = height;
+        state.VideoStream.RealFrameRate = 24;
+        state.VideoStream.BitRate = 4_000_000;
+        state.BaseRequest.Width = outputWidth;
+        state.BaseRequest.Height = outputHeight;
+        state.BaseRequest.VideoUpscalingMode = mode;
+        state.BaseRequest.VideoBitRate = 20_000_000;
+        state.BaseRequest.StreamOptions["videoTrueHdr"] = trueHdr.ToString();
+        state.OutputVideoCodec = trueHdr ? "hevc" : "h264";
+        state.OutputVideoBitrate = 20_000_000;
+        return state;
     }
 
     private static EncodingJobInfo BuildAudioState(string audioCodec, int requestedSampleRate, string? outputContainer = null)

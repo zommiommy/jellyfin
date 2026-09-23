@@ -43,5 +43,45 @@ public enum VideoUpscalingMode
     /// <summary>
     /// Apply the configured Anime4K Mode C+A shader chain.
     /// </summary>
-    Anime4KModeCPlusA = 7
+    Anime4KModeCPlusA = 7,
+
+    /// <summary>
+    /// Apply NVIDIA RTX Video Super Resolution at low quality.
+    /// </summary>
+    NvidiaVsrLow = 8,
+
+    /// <summary>
+    /// Apply NVIDIA RTX Video Super Resolution at medium quality.
+    /// </summary>
+    NvidiaVsrMedium = 9,
+
+    /// <summary>
+    /// Apply NVIDIA RTX Video Super Resolution at high quality.
+    /// </summary>
+    NvidiaVsrHigh = 10,
+
+    /// <summary>
+    /// Apply NVIDIA RTX Video Super Resolution at ultra quality.
+    /// </summary>
+    NvidiaVsrUltra = 11,
+
+    /// <summary>
+    /// Apply NVIDIA RTX Video Super Resolution Q at low quality.
+    /// </summary>
+    NvidiaVsrQLow = 12,
+
+    /// <summary>
+    /// Apply NVIDIA RTX Video Super Resolution Q at medium quality.
+    /// </summary>
+    NvidiaVsrQMedium = 13,
+
+    /// <summary>
+    /// Apply NVIDIA RTX Video Super Resolution Q at high quality.
+    /// </summary>
+    NvidiaVsrQHigh = 14,
+
+    /// <summary>
+    /// Apply NVIDIA RTX Video Super Resolution Q at ultra quality.
+    /// </summary>
+    NvidiaVsrQUltra = 15
 }

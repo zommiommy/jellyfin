@@ -51,6 +51,16 @@ namespace MediaBrowser.Model.MediaInfo
 
         public IReadOnlyDictionary<string, string> VideoUpscalingOptions { get; set; }
 
+        public bool VideoTrueHdr { get; set; }
+
+        public int? VideoTrueHdrPeakBrightness { get; set; }
+
+        public int? VideoTrueHdrContrast { get; set; }
+
+        public int? VideoTrueHdrSaturation { get; set; }
+
+        public int? VideoTrueHdrMiddleGray { get; set; }
+
         public IReadOnlyList<MediaProtocol> DirectPlayProtocols { get; set; }
     }
 }

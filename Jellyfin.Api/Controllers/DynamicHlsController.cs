@@ -1785,7 +1785,7 @@ public class DynamicHlsController : BaseJellyfinApiController
     /// <param name="isEventPlaylist">Whether the playlist is EVENT or VOD.</param>
     /// <param name="segmentContainer">The segment container.</param>
     /// <returns>The command line arguments for video transcoding.</returns>
-    private string GetVideoArguments(StreamState state, int startNumber, bool isEventPlaylist, string segmentContainer)
+    internal string GetVideoArguments(StreamState state, int startNumber, bool isEventPlaylist, string segmentContainer)
     {
         if (state.VideoStream is null)
         {
@@ -1858,6 +1858,11 @@ public class DynamicHlsController : BaseJellyfinApiController
         else
         {
             args += _encodingHelper.GetVideoQualityParam(state, codec, _encodingOptions, isEventPlaylist ? DefaultEventEncoderPreset : DefaultVodEncoderPreset);
+
+            if (state.BaseRequest.VideoTrueHdr)
+            {
+                args += " -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc -color_range tv";
+            }
 
             // Set the key frame params for video encoding to match the hls segment time.
             args += _encodingHelper.GetHlsVideoKeyFrameArguments(state, codec, state.SegmentLength, isEventPlaylist, startNumber);

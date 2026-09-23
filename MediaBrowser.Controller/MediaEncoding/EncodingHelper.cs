@@ -480,6 +480,15 @@ namespace MediaBrowser.Controller.MediaEncoding
         public string GetVideoEncoder(EncodingJobInfo state, EncodingOptions encodingOptions)
         {
             var codec = state.OutputVideoCodec;
+            if (IsNvidiaVsr(state.BaseRequest.VideoUpscalingMode) || state.BaseRequest.VideoTrueHdr)
+            {
+                if (encodingOptions.HardwareAccelerationType != HardwareAccelerationType.nvenc
+                    || !encodingOptions.EnableHardwareEncoding
+                    || (state.BaseRequest.VideoTrueHdr && !string.Equals(codec, "hevc", StringComparison.OrdinalIgnoreCase)))
+                {
+                    throw new NotSupportedException("RTX Video requires NVENC; TrueHDR requires HEVC output.");
+                }
+            }
 
             if (!string.IsNullOrEmpty(codec))
             {
@@ -1155,7 +1164,8 @@ namespace MediaBrowser.Controller.MediaEncoding
                 }
 
                 args.Append(GetCudaDeviceArgs(0, CudaAlias));
-                if (state.BaseRequest.VideoUpscalingMode != VideoUpscalingMode.None)
+                if (state.BaseRequest.VideoUpscalingMode != VideoUpscalingMode.None
+                    && !IsNvidiaVsr(state.BaseRequest.VideoUpscalingMode))
                 {
                     args.Append(GetVulkanDeviceArgs(0, null, null, VulkanAlias))
                         .Append(GetFilterHwDeviceArgs(VulkanAlias));
@@ -2212,8 +2222,17 @@ namespace MediaBrowser.Controller.MediaEncoding
                 profile = string.Empty;
             }
 
-            // We only transcode to HEVC 8-bit for now, force Main Profile.
-            if (profile.Contains("main10", StringComparison.OrdinalIgnoreCase)
+            // Ordinary transcoding remains SDR; TrueHDR requires HEVC Main10.
+            if (state.BaseRequest.VideoTrueHdr)
+            {
+                if (!string.Equals(videoEncoder, "hevc_nvenc", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new NotSupportedException("TrueHDR requires the HEVC NVENC encoder.");
+                }
+
+                profile = "main10";
+            }
+            else if (profile.Contains("main10", StringComparison.OrdinalIgnoreCase)
                 || profile.Contains("mainstill", StringComparison.OrdinalIgnoreCase))
             {
                 profile = "main";
@@ -2408,7 +2427,7 @@ namespace MediaBrowser.Controller.MediaEncoding
         {
             var request = state.BaseRequest;
 
-            if (!request.AllowVideoStreamCopy)
+            if (!request.AllowVideoStreamCopy || request.VideoTrueHdr || request.VideoUpscalingMode != VideoUpscalingMode.None)
             {
                 return false;
             }
@@ -3842,6 +3861,223 @@ namespace MediaBrowser.Controller.MediaEncoding
                 tonemapArg);
         }
 
+        /// <summary>
+        /// Tests whether a mode uses NVIDIA's native CUDA VSR models.
+        /// </summary>
+        /// <param name="mode">The requested mode.</param>
+        /// <returns>Whether the mode uses NVIDIA VSR.</returns>
+        public static bool IsNvidiaVsr(VideoUpscalingMode mode)
+            => mode is >= VideoUpscalingMode.NvidiaVsrLow and <= VideoUpscalingMode.NvidiaVsrQUltra;
+
+        /// <summary>
+        /// Selects the smallest native VSR head covering the target, or the largest available head.
+        /// </summary>
+        /// <param name="mode">The VSR model family.</param>
+        /// <param name="width">Rotated source width.</param>
+        /// <param name="height">Rotated source height.</param>
+        /// <param name="outputWidth">Exact target width.</param>
+        /// <param name="outputHeight">Exact target height.</param>
+        /// <returns>The native integer scale.</returns>
+        public static int GetNvidiaVsrScale(VideoUpscalingMode mode, int width, int height, int outputWidth, int outputHeight)
+        {
+            var maximumScale = mode is VideoUpscalingMode.NvidiaVsrLow or VideoUpscalingMode.NvidiaVsrMedium
+                or VideoUpscalingMode.NvidiaVsrQLow or VideoUpscalingMode.NvidiaVsrQMedium ? 2 : 4;
+            for (var scale = 2; scale < maximumScale; scale++)
+            {
+                if (width * scale >= outputWidth && height * scale >= outputHeight)
+                {
+                    return scale;
+                }
+            }
+
+            return maximumScale;
+        }
+
+        private string GetNvidiaRtxModelPath(EncodingOptions options, string filename)
+        {
+            var directory = string.IsNullOrWhiteSpace(options.NvidiaRtxVideoModelDirectory)
+                ? Environment.GetEnvironmentVariable("JELLYFIN_NVIDIA_RTX_VIDEO_MODEL_DIRECTORY")
+                : options.NvidiaRtxVideoModelDirectory;
+            if (string.IsNullOrWhiteSpace(directory))
+            {
+                throw new InvalidOperationException("The NVIDIA RTX Video model directory is not configured.");
+            }
+
+            var path = Path.Combine(directory, filename);
+            if (!File.Exists(path))
+            {
+                throw new FileNotFoundException("The configured NVIDIA RTX Video model pack was not found.", path);
+            }
+
+            return _mediaEncoder.EscapeSubtitleFilterPath(path);
+        }
+
+        private (List<string> MainFilters, List<string> SubFilters, List<string> OverlayFilters) GetNvidiaRtxVidFilters(
+            EncodingJobInfo state,
+            EncodingOptions options,
+            string videoDecoder,
+            string videoEncoder)
+        {
+            var request = state.BaseRequest;
+            var mode = request.VideoUpscalingMode;
+            var vsr = IsNvidiaVsr(mode);
+            var trueHdr = request.VideoTrueHdr;
+            if (options.HardwareAccelerationType != HardwareAccelerationType.nvenc
+                || !videoEncoder.Contains("nvenc", StringComparison.OrdinalIgnoreCase)
+                || !_mediaEncoder.SupportsFilter("rtxvideo_cuda")
+                || !_mediaEncoder.SupportsFilter("hwupload_cuda"))
+            {
+                throw new NotSupportedException("RTX Video requires NVENC and FFmpeg rtxvideo_cuda and hwupload_cuda support.");
+            }
+
+            if (trueHdr && (!string.Equals(videoEncoder, "hevc_nvenc", StringComparison.OrdinalIgnoreCase)
+                || (mode != VideoUpscalingMode.None && !vsr)))
+            {
+                throw new NotSupportedException("TrueHDR requires HEVC NVENC and cannot be combined with libplacebo upscaling.");
+            }
+
+            var video = state.VideoStream;
+            if (video?.Width is not > 0 || video.Height is not > 0 || video.VideoRange == VideoRange.HDR)
+            {
+                throw new NotSupportedException("RTX Video requires an SDR source with known dimensions.");
+            }
+
+            var rotated = Math.Abs(video.Rotation ?? 0) == 90;
+            var width = (rotated ? video.Height : video.Width).Value;
+            var height = (rotated ? video.Width : video.Height).Value;
+            var (outputWidth, outputHeight) = GetFixedOutputSize(width, height, request.Width, request.Height, request.MaxWidth, request.MaxHeight);
+            outputWidth ??= width;
+            outputHeight ??= height;
+            if (vsr && (width > 1920 || height > 1080))
+            {
+                throw new NotSupportedException("NVIDIA VSR source dimensions must fit within 1920x1080 after rotation.");
+            }
+
+            if (vsr && (request.Width is not > 0 || request.Height is not > 0
+                || outputWidth != request.Width || outputHeight != request.Height
+                || outputWidth <= width || outputHeight <= height
+                || outputWidth > 4096 || outputHeight > 4096
+                || outputWidth % 2 != 0 || outputHeight % 2 != 0))
+            {
+                throw new ArgumentException("NVIDIA VSR requires an even exact upscale target within the client limits and 4096x4096.", nameof(state));
+            }
+
+            var scale = vsr ? GetNvidiaVsrScale(mode, width, height, outputWidth.Value, outputHeight.Value) : 1;
+            if (trueHdr && (width * scale > 3840 || height * scale > 2160))
+            {
+                throw new NotSupportedException("TrueHDR input dimensions, including the native VSR scale, must fit within 3840x2160.");
+            }
+
+            var model = vsr ? mode.ToString()["NvidiaVsr".Length..].ToLowerInvariant() : "none";
+            var filter = new StringBuilder("rtxvideo_cuda=");
+            if (vsr)
+            {
+                filter.Append("vsr_models='").Append(GetNvidiaRtxModelPath(options, "vsr.zip")).Append("':");
+            }
+
+            filter.Append("vsr=").Append(model).Append(":scale=").Append(scale);
+            if (trueHdr)
+            {
+                filter.Append(":truehdr_models='")
+                    .Append(GetNvidiaRtxModelPath(options, "truehdr.zip")).Append("':truehdr=1")
+                    .Append(":truehdr_peak=").Append(request.VideoTrueHdrPeakBrightness)
+                    .Append(":truehdr_contrast=").Append(request.VideoTrueHdrContrast)
+                    .Append(":truehdr_saturation=").Append(request.VideoTrueHdrSaturation)
+                    .Append(":truehdr_middle_gray=").Append(request.VideoTrueHdrMiddleGray);
+            }
+
+            var cudaInput = videoDecoder.Contains("cuda", StringComparison.OrdinalIgnoreCase);
+            var mainFilters = new List<string> { GetOverwriteColorPropertiesParam(state, false) };
+            var subFilters = new List<string>();
+            var overlayFilters = new List<string>();
+            if (IsDeinterlaceAvailable(state))
+            {
+                mainFilters.Add(cudaInput ? GetHwDeinterlaceFilter(state, options, "cuda") : GetSwDeinterlaceFilter(state, options));
+            }
+
+            var transpose = GetVideoTransposeDirection(state);
+            if (cudaInput && !string.IsNullOrEmpty(transpose))
+            {
+                if (!_mediaEncoder.SupportsFilter("transpose_cuda"))
+                {
+                    throw new NotSupportedException("Rotated NVDEC sources require transpose_cuda for RTX Video.");
+                }
+
+                mainFilters.Add($"transpose_cuda=dir={transpose}");
+            }
+
+            var hasSubs = state.SubtitleStream is not null && ShouldEncodeSubtitle(state);
+            if (hasSubs && trueHdr)
+            {
+                // Composite in SDR before RTX processing: overlay_cuda does not support p010,
+                // and burning SDR subtitle values into PQ frames would give incorrect luminance.
+                if (cudaInput)
+                {
+                    mainFilters.Add("scale_cuda=format=yuv420p");
+                    mainFilters.Add("hwdownload");
+                    mainFilters.Add("format=yuv420p");
+                    cudaInput = false;
+                }
+
+                if (state.SubtitleStream.IsTextSubtitleStream)
+                {
+                    mainFilters.Add(GetTextSubtitlesFilter(state, false, false));
+                }
+                else
+                {
+                    subFilters.Add(GetGraphicalSubPreProcessFilters(width, height, state.SubtitleStream.Width, state.SubtitleStream.Height, width, height, null, null));
+                    overlayFilters.Add("overlay=eof_action=pass:repeatlast=0");
+                }
+            }
+
+            var outputFilters = overlayFilters.Count > 0 ? overlayFilters : mainFilters;
+            if (!cudaInput)
+            {
+                outputFilters.Add("format=nv12");
+                outputFilters.Add("hwupload_cuda");
+            }
+
+            outputFilters.Add(filter.ToString());
+            outputFilters.Add(string.Format(CultureInfo.InvariantCulture, "scale_cuda=w={0}:h={1}:interp_algo=lanczos:format={2}", outputWidth, outputHeight, trueHdr ? "p010" : "yuv420p"));
+            if (vsr)
+            {
+                outputFilters.Add("setsar=1");
+            }
+
+            if (hasSubs && !trueHdr)
+            {
+                AppendCudaSubtitleFilters(state, width, height, subFilters, overlayFilters);
+            }
+
+            return (mainFilters, subFilters, overlayFilters);
+        }
+
+        private void AppendCudaSubtitleFilters(EncodingJobInfo state, int? inputWidth, int? inputHeight, List<string> subFilters, List<string> overlayFilters)
+        {
+            var request = state.BaseRequest;
+            var subtitle = state.SubtitleStream;
+            var alphaFormatOpt = string.Empty;
+            if (!subtitle.IsTextSubtitleStream)
+            {
+                subFilters.Add(GetGraphicalSubPreProcessFilters(inputWidth, inputHeight, subtitle.Width, subtitle.Height, request.Width, request.Height, request.MaxWidth, request.MaxHeight));
+                subFilters.Add("format=yuva420p");
+            }
+            else
+            {
+                var hasAssSubs = string.Equals(subtitle.Codec, "ass", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(subtitle.Codec, "ssa", StringComparison.OrdinalIgnoreCase);
+                var subFramerate = hasAssSubs ? Math.Min(state.VideoStream?.RealFrameRate ?? 25, 60) : 10;
+                subFilters.Add(GetAlphaSrcFilter(state, inputWidth, inputHeight, request.Width, request.Height, request.MaxWidth, request.MaxHeight, subFramerate));
+                subFilters.Add("format=yuva420p");
+                subFilters.Add(GetTextSubtitlesFilter(state, true, true));
+                alphaFormatOpt = _mediaEncoder.SupportsFilterWithOption(FilterOptionType.OverlayCudaAlphaFormat)
+                    ? ":alpha_format=premultiplied" : string.Empty;
+            }
+
+            subFilters.Add("hwupload=derive_device=cuda");
+            overlayFilters.Add($"overlay_cuda=eof_action=pass:repeatlast=0{alphaFormatOpt}");
+        }
+
         private string GetVideoUpscalingFilter(EncodingJobInfo state, EncodingOptions options, string videoEncoder)
         {
             var mode = state.BaseRequest.VideoUpscalingMode;
@@ -4174,6 +4410,11 @@ namespace MediaBrowser.Controller.MediaEncoding
             var isSwDecoder = string.IsNullOrEmpty(vidDecoder);
             var isSwEncoder = !vidEncoder.Contains("nvenc", StringComparison.OrdinalIgnoreCase);
 
+            if (IsNvidiaVsr(state.BaseRequest.VideoUpscalingMode) || state.BaseRequest.VideoTrueHdr)
+            {
+                return GetNvidiaRtxVidFilters(state, options, vidDecoder, vidEncoder);
+            }
+
             if (state.BaseRequest.VideoUpscalingMode != VideoUpscalingMode.None)
             {
                 _ = GetVideoUpscalingFilter(state, options, vidEncoder);
@@ -4197,6 +4438,11 @@ namespace MediaBrowser.Controller.MediaEncoding
             string vidDecoder,
             string vidEncoder)
         {
+            if (IsNvidiaVsr(state.BaseRequest.VideoUpscalingMode) || state.BaseRequest.VideoTrueHdr)
+            {
+                return GetNvidiaRtxVidFilters(state, options, vidDecoder, vidEncoder);
+            }
+
             var inW = state.VideoStream?.Width;
             var inH = state.VideoStream?.Height;
             var reqW = state.BaseRequest.Width;
@@ -4220,9 +4466,6 @@ namespace MediaBrowser.Controller.MediaEncoding
             var hasSubs = state.SubtitleStream is not null && ShouldEncodeSubtitle(state);
             var hasTextSubs = hasSubs && state.SubtitleStream.IsTextSubtitleStream;
             var hasGraphicalSubs = hasSubs && !state.SubtitleStream.IsTextSubtitleStream;
-            var hasAssSubs = hasSubs
-                && (string.Equals(state.SubtitleStream.Codec, "ass", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(state.SubtitleStream.Codec, "ssa", StringComparison.OrdinalIgnoreCase));
             var subW = state.SubtitleStream?.Width;
             var subH = state.SubtitleStream?.Height;
 
@@ -4351,31 +4594,7 @@ namespace MediaBrowser.Controller.MediaEncoding
             {
                 if (hasSubs)
                 {
-                    var alphaFormatOpt = string.Empty;
-                    if (hasGraphicalSubs)
-                    {
-                        var subPreProcFilters = GetGraphicalSubPreProcessFilters(swpInW, swpInH, subW, subH, reqW, reqH, reqMaxW, reqMaxH);
-                        subFilters.Add(subPreProcFilters);
-                        subFilters.Add("format=yuva420p");
-                    }
-                    else if (hasTextSubs)
-                    {
-                        var framerate = state.VideoStream?.RealFrameRate;
-                        var subFramerate = hasAssSubs ? Math.Min(framerate ?? 25, 60) : 10;
-
-                        // alphasrc=s=1280x720:r=10:start=0,format=yuva420p,subtitles,hwupload
-                        var alphaSrcFilter = GetAlphaSrcFilter(state, swpInW, swpInH, reqW, reqH, reqMaxW, reqMaxH, subFramerate);
-                        var subTextSubtitlesFilter = GetTextSubtitlesFilter(state, true, true);
-                        subFilters.Add(alphaSrcFilter);
-                        subFilters.Add("format=yuva420p");
-                        subFilters.Add(subTextSubtitlesFilter);
-
-                        alphaFormatOpt = _mediaEncoder.SupportsFilterWithOption(FilterOptionType.OverlayCudaAlphaFormat)
-                            ? ":alpha_format=premultiplied" : string.Empty;
-                    }
-
-                    subFilters.Add("hwupload=derive_device=cuda");
-                    overlayFilters.Add($"overlay_cuda=eof_action=pass:repeatlast=0{alphaFormatOpt}");
+                    AppendCudaSubtitleFilters(state, swpInW, swpInH, subFilters, overlayFilters);
                 }
             }
             else

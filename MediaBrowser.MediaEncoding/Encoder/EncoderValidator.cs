@@ -120,6 +120,7 @@ namespace MediaBrowser.MediaEncoding.Encoder
             "overlay_cuda",
             "transpose_cuda",
             "hwupload_cuda",
+            "rtxvideo_cuda",
             // opencl
             "scale_opencl",
             "tonemap_opencl",

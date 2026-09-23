@@ -4,6 +4,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using MediaBrowser.Model.Dlna;
 using MediaBrowser.Model.MediaInfo;
 
@@ -132,6 +133,48 @@ namespace MediaBrowser.Controller.MediaEncoding
         public VideoUpscalingMode VideoUpscalingMode { get; set; }
 
         /// <summary>
+        /// Gets a value indicating whether to convert SDR video to HDR using NVIDIA RTX Video HDR.
+        /// </summary>
+        public bool VideoTrueHdr
+        {
+            get
+            {
+                var value = GetOption("videoTrueHdr");
+                if (value is null)
+                {
+                    return false;
+                }
+
+                if (bool.TryParse(value, out var parsed))
+                {
+                    return parsed;
+                }
+
+                throw new ArgumentException($"The videoTrueHdr value '{value}' is not a boolean.");
+            }
+        }
+
+        /// <summary>
+        /// Gets the TrueHDR peak brightness in nits, from 400 to 2000. Defaults to 1000.
+        /// </summary>
+        public int VideoTrueHdrPeakBrightness => GetVideoTrueHdrIntOption("videoTrueHdrPeakBrightness", 1000, 400, 2000);
+
+        /// <summary>
+        /// Gets the TrueHDR contrast, from 0 to 200. Defaults to 100.
+        /// </summary>
+        public int VideoTrueHdrContrast => GetVideoTrueHdrIntOption("videoTrueHdrContrast", 100, 0, 200);
+
+        /// <summary>
+        /// Gets the TrueHDR saturation, from 0 to 200. Defaults to 100.
+        /// </summary>
+        public int VideoTrueHdrSaturation => GetVideoTrueHdrIntOption("videoTrueHdrSaturation", 100, 0, 200);
+
+        /// <summary>
+        /// Gets the TrueHDR middle gray, from 10 to 100. Defaults to 50.
+        /// </summary>
+        public int VideoTrueHdrMiddleGray => GetVideoTrueHdrIntOption("videoTrueHdrMiddleGray", 50, 10, 100);
+
+        /// <summary>
         /// Gets or sets the width of the max.
         /// </summary>
         /// <value>The width of the max.</value>
@@ -225,6 +268,24 @@ namespace MediaBrowser.Controller.MediaEncoding
             }
 
             return null;
+        }
+
+        private int GetVideoTrueHdrIntOption(string name, int fallback, int minimum, int maximum)
+        {
+            var value = GetOption(name);
+            if (value is null)
+            {
+                return fallback;
+            }
+
+            if (int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+                && parsed >= minimum
+                && parsed <= maximum)
+            {
+                return parsed;
+            }
+
+            throw new ArgumentOutOfRangeException(name, value, $"Value must be between {minimum} and {maximum}.");
         }
     }
 }

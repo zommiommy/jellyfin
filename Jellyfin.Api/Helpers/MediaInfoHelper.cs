@@ -13,6 +13,7 @@ using Jellyfin.Data.Enums;
 using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Database.Implementations.Enums;
 using Jellyfin.Extensions;
+using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Extensions;
 using MediaBrowser.Common.Net;
 using MediaBrowser.Controller;
@@ -22,9 +23,11 @@ using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Audio;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.MediaEncoding;
+using MediaBrowser.Model.Configuration;
 using MediaBrowser.Model.Dlna;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
+using MediaBrowser.Model.Extensions;
 using MediaBrowser.Model.MediaInfo;
 using MediaBrowser.Model.Session;
 using Microsoft.AspNetCore.Http;
@@ -184,6 +187,11 @@ public class MediaInfoHelper
     /// <param name="videoUpscalingOptions">Advanced server-side video upscaling options.</param>
     /// <param name="alwaysBurnInSubtitleWhenTranscoding">Always burn-in subtitle when transcoding.</param>
     /// <param name="ipAddress">Requesting IP address.</param>
+    /// <param name="videoTrueHdr">Whether SDR to HDR10 conversion was requested.</param>
+    /// <param name="videoTrueHdrPeakBrightness">Peak HDR luminance in nits.</param>
+    /// <param name="videoTrueHdrContrast">TrueHDR contrast.</param>
+    /// <param name="videoTrueHdrSaturation">TrueHDR saturation.</param>
+    /// <param name="videoTrueHdrMiddleGray">TrueHDR middle gray.</param>
     public void SetDeviceSpecificData(
         BaseItem item,
         MediaSourceInfo mediaSource,
@@ -207,7 +215,12 @@ public class MediaInfoHelper
         int? videoUpscalingHeight,
         IReadOnlyDictionary<string, string>? videoUpscalingOptions,
         bool alwaysBurnInSubtitleWhenTranscoding,
-        IPAddress ipAddress)
+        IPAddress ipAddress,
+        bool videoTrueHdr = false,
+        int? videoTrueHdrPeakBrightness = null,
+        int? videoTrueHdrContrast = null,
+        int? videoTrueHdrSaturation = null,
+        int? videoTrueHdrMiddleGray = null)
     {
         var streamBuilder = new StreamBuilder(_mediaEncoder, _logger);
         (videoUpscalingMode, videoUpscalingWidth, videoUpscalingHeight) = GetVideoUpscalingTarget(
@@ -216,6 +229,36 @@ public class MediaInfoHelper
             videoUpscalingWidth,
             videoUpscalingHeight);
         var enableVideoUpscaling = videoUpscalingMode != VideoUpscalingMode.None;
+        if (videoTrueHdr)
+        {
+            var encodingOptions = _serverConfigurationManager.GetEncodingOptions();
+            var hdrProfile = GetVideoTrueHdrProfile(mediaSource, profile, videoUpscalingMode, videoUpscalingWidth, videoUpscalingHeight);
+            videoTrueHdr = encodingOptions.HardwareAccelerationType == HardwareAccelerationType.nvenc
+                && encodingOptions.EnableHardwareEncoding
+                && _mediaEncoder.SupportsEncoder("hevc_nvenc")
+                && _mediaEncoder.SupportsFilter("rtxvideo_cuda")
+                && hdrProfile is not null;
+            if (videoTrueHdr)
+            {
+                // Restrict this request, not the shared client profile, to the HDR-capable HLS path.
+                profile = new DeviceProfile
+                {
+                    Id = profile.Id,
+                    Name = profile.Name,
+                    MaxStreamingBitrate = profile.MaxStreamingBitrate,
+                    MaxStaticBitrate = profile.MaxStaticBitrate,
+                    MusicStreamingTranscodingBitrate = profile.MusicStreamingTranscodingBitrate,
+                    MaxStaticMusicBitrate = profile.MaxStaticMusicBitrate,
+                    DirectPlayProfiles = profile.DirectPlayProfiles,
+                    TranscodingProfiles = [new TranscodingProfile(hdrProfile!) { VideoCodec = "hevc" }],
+                    ContainerProfiles = profile.ContainerProfiles,
+                    CodecProfiles = profile.CodecProfiles,
+                    SubtitleProfiles = profile.SubtitleProfiles
+                };
+            }
+        }
+
+        var enableVideoProcessing = enableVideoUpscaling || videoTrueHdr;
 
         var options = new MediaOptions
         {
@@ -226,11 +269,16 @@ public class MediaInfoHelper
             Profile = profile,
             MaxAudioChannels = maxAudioChannels,
             AllowAudioStreamCopy = allowAudioStreamCopy,
-            AllowVideoStreamCopy = enableVideoUpscaling ? false : allowVideoStreamCopy,
+            AllowVideoStreamCopy = enableVideoProcessing ? false : allowVideoStreamCopy,
             AlwaysBurnInSubtitleWhenTranscoding = alwaysBurnInSubtitleWhenTranscoding,
             VideoUpscalingMode = videoUpscalingMode,
             VideoUpscalingWidth = videoUpscalingWidth,
             VideoUpscalingHeight = videoUpscalingHeight,
+            VideoTrueHdr = videoTrueHdr,
+            VideoTrueHdrPeakBrightness = videoTrueHdrPeakBrightness,
+            VideoTrueHdrContrast = videoTrueHdrContrast,
+            VideoTrueHdrSaturation = videoTrueHdrSaturation,
+            VideoTrueHdrMiddleGray = videoTrueHdrMiddleGray,
         };
 
         if (string.Equals(mediaSourceId, mediaSource.Id, StringComparison.OrdinalIgnoreCase))
@@ -242,12 +290,12 @@ public class MediaInfoHelper
 
         var user = _userManager.GetUserById(userId) ?? throw new ResourceNotFoundException();
 
-        if (!enableDirectPlay || enableVideoUpscaling)
+        if (!enableDirectPlay || enableVideoProcessing)
         {
             mediaSource.SupportsDirectPlay = false;
         }
 
-        if (!enableDirectStream || !allowVideoStreamCopy || enableVideoUpscaling)
+        if (!enableDirectStream || !allowVideoStreamCopy || enableVideoProcessing)
         {
             mediaSource.SupportsDirectStream = false;
         }
@@ -292,7 +340,7 @@ public class MediaInfoHelper
             streamInfo.PlaySessionId = playSessionId;
             streamInfo.StartPositionTicks = startTimeTicks;
 
-            if (enableVideoUpscaling && videoUpscalingOptions is not null)
+            if (enableVideoUpscaling && !EncodingHelper.IsNvidiaVsr(videoUpscalingMode) && videoUpscalingOptions is not null)
             {
                 foreach (var option in videoUpscalingOptions)
                 {
@@ -350,7 +398,7 @@ public class MediaInfoHelper
                     streamInfo.PlayMethod = PlayMethod.Transcode;
                     mediaSource.TranscodingUrl = streamInfo.ToUrl(null, claimsPrincipal.GetToken(), null);
 
-                    if (!allowVideoStreamCopy)
+                    if (!allowVideoStreamCopy || enableVideoProcessing)
                     {
                         mediaSource.TranscodingUrl += "&allowVideoStreamCopy=false";
                     }
@@ -493,7 +541,12 @@ public class MediaInfoHelper
                 request.VideoUpscalingHeight,
                 request.VideoUpscalingOptions,
                 request.AlwaysBurnInSubtitleWhenTranscoding,
-                httpContext.GetNormalizedRemoteIP());
+                httpContext.GetNormalizedRemoteIP(),
+                request.VideoTrueHdr,
+                request.VideoTrueHdrPeakBrightness,
+                request.VideoTrueHdrContrast,
+                request.VideoTrueHdrSaturation,
+                request.VideoTrueHdrMiddleGray);
         }
         else
         {
@@ -672,6 +725,14 @@ public class MediaInfoHelper
             return (VideoUpscalingMode.None, null, null);
         }
 
+        var rotated = EncodingHelper.IsNvidiaVsr(mode) && Math.Abs(videoStream.Rotation ?? 0) == 90;
+        var sourceWidth = (rotated ? videoStream.Height : videoStream.Width).Value;
+        var sourceHeight = (rotated ? videoStream.Width : videoStream.Height).Value;
+        if (EncodingHelper.IsNvidiaVsr(mode) && (sourceWidth > 1920 || sourceHeight > 1080))
+        {
+            return (VideoUpscalingMode.None, null, null);
+        }
+
         var aspectRatio = videoStream.Width.Value / (double)videoStream.Height.Value;
         var aspectRatioParts = videoStream.AspectRatio?.Split(':', 2);
         if (aspectRatioParts?.Length == 2
@@ -681,6 +742,11 @@ public class MediaInfoHelper
             && aspectHeight > 0)
         {
             aspectRatio = aspectWidth / aspectHeight;
+        }
+
+        if (rotated)
+        {
+            aspectRatio = 1 / aspectRatio;
         }
 
         int width;
@@ -696,11 +762,103 @@ public class MediaInfoHelper
             width = 2 * ((int)Math.Floor(height * aspectRatio) / 2);
         }
 
-        if (width <= videoStream.Width.Value || height <= videoStream.Height.Value)
+        if (width <= sourceWidth || height <= sourceHeight)
         {
             return (VideoUpscalingMode.None, null, null);
         }
 
         return (mode, width, height);
+    }
+
+    internal static TranscodingProfile? GetVideoTrueHdrProfile(
+        MediaSourceInfo mediaSource,
+        DeviceProfile profile,
+        VideoUpscalingMode mode,
+        int? outputWidth,
+        int? outputHeight)
+    {
+        var video = mediaSource.VideoStream;
+        if (video?.Width is not > 0 || video.Height is not > 0 || video.VideoRange == VideoRange.HDR
+            || (mode != VideoUpscalingMode.None && !EncodingHelper.IsNvidiaVsr(mode)))
+        {
+            return null;
+        }
+
+        var rotated = Math.Abs(video.Rotation ?? 0) == 90;
+        var width = (rotated ? video.Height : video.Width).Value;
+        var height = (rotated ? video.Width : video.Height).Value;
+        var scale = EncodingHelper.IsNvidiaVsr(mode)
+            ? EncodingHelper.GetNvidiaVsrScale(mode, width, height, outputWidth ?? width, outputHeight ?? height)
+            : 1;
+        if (width * scale > 3840 || height * scale > 2160)
+        {
+            return null;
+        }
+
+        bool SatisfiesOutput(ProfileCondition condition)
+        {
+            if (condition.Property == ProfileConditionValue.VideoProfile)
+            {
+                condition = new ProfileCondition
+                {
+                    Property = condition.Property,
+                    Condition = condition.Condition,
+                    IsRequired = condition.IsRequired,
+                    Value = condition.Value.Replace(" ", string.Empty, StringComparison.Ordinal)
+                };
+            }
+
+            return ConditionProcessor.IsVideoConditionSatisfied(
+                condition,
+                outputWidth ?? width,
+                outputHeight ?? height,
+                10,
+                null,
+                "main10",
+                VideoRangeType.HDR10,
+                null,
+                video.ReferenceFrameRate,
+                null,
+                mediaSource.Timestamp,
+                false,
+                false,
+                null,
+                mediaSource.MediaStreams.Count,
+                1,
+                mediaSource.GetStreamCount(MediaStreamType.Audio),
+                "hvc1",
+                false,
+                0);
+        }
+
+        foreach (var transcode in profile.TranscodingProfiles)
+        {
+            if (transcode.Type != DlnaProfileType.Video || transcode.Context != EncodingContext.Streaming
+                || transcode.Protocol != MediaStreamProtocol.hls
+                || !string.Equals(transcode.Container, "mp4", StringComparison.OrdinalIgnoreCase)
+                || !ContainerHelper.ContainsContainer(transcode.VideoCodec, false, "hevc"))
+            {
+                continue;
+            }
+
+            var conditions = profile.CodecProfiles
+                .Where(codec => codec.Type == CodecType.Video && codec.ContainsAnyCodec("hevc", "mp4", true)
+                    && codec.ApplyConditions.All(SatisfiesOutput))
+                .SelectMany(codec => codec.Conditions)
+                .Concat(transcode.Conditions)
+                .ToArray();
+            // An unconstrained HEVC profile is not evidence that the display supports HDR.
+            if (conditions.Any(condition => condition.Property == ProfileConditionValue.VideoRangeType
+                    && condition.Condition is ProfileConditionType.Equals or ProfileConditionType.EqualsAny
+                    && SatisfiesOutput(condition))
+                && conditions.Where(condition => condition.Property is ProfileConditionValue.VideoRangeType
+                    or ProfileConditionValue.VideoProfile or ProfileConditionValue.VideoBitDepth
+                    or ProfileConditionValue.Width or ProfileConditionValue.Height).All(SatisfiesOutput))
+            {
+                return transcode;
+            }
+        }
+
+        return null;
     }
 }

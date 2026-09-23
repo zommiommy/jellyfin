@@ -1,10 +1,14 @@
 using System;
 using System.Globalization;
+using System.Net;
+using System.Security.Claims;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Api.Helpers;
+using Jellyfin.Data.Enums;
 using Jellyfin.Database.Implementations.Entities;
+using Jellyfin.Database.Implementations.Enums;
 using MediaBrowser.Common.Net;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Configuration;
@@ -13,10 +17,13 @@ using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.MediaEncoding;
+using MediaBrowser.Model.Configuration;
+using MediaBrowser.Model.Dlna;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Logging;
 using Moq;
 using Xunit;
@@ -155,6 +162,147 @@ namespace Jellyfin.Api.Tests.Helpers
             Assert.Equal(VideoUpscalingMode.None, result.Mode);
             Assert.Null(result.Width);
             Assert.Null(result.Height);
+        }
+
+        [Theory]
+        [InlineData(1920, 1080, 0, null, 3840, 2160, true)]
+        [InlineData(1920, 1080, 0, "smpte2084", 3840, 2160, false)]
+        [InlineData(1922, 1080, 0, null, 3840, 2160, false)]
+        [InlineData(1920, 1082, 0, null, 3840, 2160, false)]
+        [InlineData(1920, 1080, 90, null, 2160, 3840, false)]
+        [InlineData(1080, 1920, 90, null, 3840, 2160, true)]
+        [InlineData(1920, 1080, 0, null, 1920, 1080, false)]
+        public void GetVideoUpscalingTarget_NvidiaVsr_UsesRotatedSourceLimits(
+            int width, int height, int rotation, string? transfer, int targetWidth, int targetHeight, bool enabled)
+        {
+            var source = new MediaSourceInfo
+            {
+                MediaStreams = [new MediaStream { Type = MediaStreamType.Video, Width = width, Height = height, Rotation = rotation, ColorTransfer = transfer }]
+            };
+            var result = MediaInfoHelper.GetVideoUpscalingTarget(source, VideoUpscalingMode.NvidiaVsrQUltra, targetWidth, targetHeight);
+            Assert.Equal(enabled ? VideoUpscalingMode.NvidiaVsrQUltra : VideoUpscalingMode.None, result.Mode);
+            Assert.Equal(enabled ? targetWidth : (int?)null, result.Width);
+            Assert.Equal(enabled ? targetHeight : (int?)null, result.Height);
+        }
+
+        [Theory]
+        [InlineData(VideoUpscalingMode.None, 1920, 1080, null, null, null, true, true)]
+        [InlineData(VideoUpscalingMode.None, 1920, 1080, null, null, null, false, false)]
+        [InlineData(VideoUpscalingMode.None, 1920, 1080, null, null, "smpte2084", true, false)]
+        [InlineData(VideoUpscalingMode.None, 3842, 2160, null, null, null, true, false)]
+        [InlineData(VideoUpscalingMode.Fsr, 1920, 1080, 3840, 2160, null, true, false)]
+        [InlineData(VideoUpscalingMode.NvidiaVsrQHigh, 1280, 720, 3840, 2160, null, true, true)]
+        [InlineData(VideoUpscalingMode.NvidiaVsrLow, 1280, 720, 3840, 2160, null, true, true)]
+        [InlineData(VideoUpscalingMode.NvidiaVsrUltra, 1920, 1080, 4096, 2304, null, true, false)]
+        public void GetVideoTrueHdrProfile_RequiresSdrNativeGeometryAndHdr10Client(
+            VideoUpscalingMode mode, int width, int height, int? outputWidth, int? outputHeight, string? transfer, bool hdrClient, bool enabled)
+        {
+            var source = new MediaSourceInfo
+            {
+                MediaStreams = [new MediaStream { Type = MediaStreamType.Video, Width = width, Height = height, ColorTransfer = transfer }]
+            };
+            var result = MediaInfoHelper.GetVideoTrueHdrProfile(source, CreateHdrProfile(hdrClient), mode, outputWidth, outputHeight);
+            Assert.Equal(enabled, result is not null);
+        }
+
+        [Theory]
+        [InlineData("ts", "hevc", "10", false)]
+        [InlineData("mp4", "h264", "10", false)]
+        [InlineData("mp4", "hevc", "8", false)]
+        [InlineData("mp4", "hevc", "10", true)]
+        public void GetVideoTrueHdrProfile_RequiresHevcTenBitFmp4(string container, string codec, string bitDepth, bool enabled)
+        {
+            var profile = CreateHdrProfile(true);
+            profile.TranscodingProfiles[0].Container = container;
+            profile.TranscodingProfiles[0].VideoCodec = codec;
+            profile.CodecProfiles[0].Conditions =
+            [
+                new ProfileCondition { Property = ProfileConditionValue.VideoRangeType, Condition = ProfileConditionType.EqualsAny, Value = "SDR|HDR10" },
+                new ProfileCondition { Property = ProfileConditionValue.VideoBitDepth, Condition = ProfileConditionType.LessThanEqual, Value = bitDepth }
+            ];
+            var source = new MediaSourceInfo { MediaStreams = [new MediaStream { Type = MediaStreamType.Video, Width = 1920, Height = 1080 }] };
+            Assert.Equal(enabled, MediaInfoHelper.GetVideoTrueHdrProfile(source, profile, VideoUpscalingMode.None, null, null) is not null);
+        }
+
+        [Theory]
+        [InlineData(true, true, false, VideoUpscalingMode.None, true)]
+        [InlineData(true, true, false, VideoUpscalingMode.NvidiaVsrQHigh, true)]
+        [InlineData(false, true, false, VideoUpscalingMode.None, false)]
+        [InlineData(true, false, false, VideoUpscalingMode.None, false)]
+        [InlineData(true, true, true, VideoUpscalingMode.None, false)]
+        public void SetDeviceSpecificData_TrueHdr_NegotiatesMain10OrPreservesDirectPlay(
+            bool hdrClient, bool nvenc, bool hdrSource, VideoUpscalingMode mode, bool enabled)
+        {
+            var user = new User("test", "auth", "reset");
+            user.Permissions.Add(new Permission(PermissionKind.EnableVideoPlaybackTranscoding, true));
+            var users = new Mock<IUserManager>();
+            users.Setup(manager => manager.GetUserById(user.Id)).Returns(user);
+            var configuration = new Mock<IServerConfigurationManager>();
+            configuration.SetupGet(manager => manager.Configuration).Returns(new ServerConfiguration());
+            configuration.Setup(manager => manager.GetConfiguration("encoding")).Returns(new EncodingOptions
+            {
+                HardwareAccelerationType = nvenc ? HardwareAccelerationType.nvenc : HardwareAccelerationType.none,
+                EnableHardwareEncoding = true
+            });
+            var encoder = new Mock<IMediaEncoder>();
+            encoder.Setup(value => value.SupportsEncoder("hevc_nvenc")).Returns(true);
+            encoder.Setup(value => value.SupportsFilter("rtxvideo_cuda")).Returns(true);
+            var helper = new MediaInfoHelper(users.Object, Mock.Of<ILibraryManager>(), Mock.Of<IMediaSourceManager>(), encoder.Object, configuration.Object, Mock.Of<ILogger<MediaInfoHelper>>(), Mock.Of<INetworkManager>(), Mock.Of<IDeviceManager>(), Mock.Of<IServerApplicationHost>());
+            var movie = new Movie { Id = Guid.NewGuid() };
+            var source = new MediaSourceInfo
+            {
+                Id = "source", Container = "mkv", Protocol = MediaProtocol.File, Path = "/media/test.mkv", Bitrate = 4_192_000,
+                SupportsDirectPlay = true, SupportsDirectStream = true, SupportsTranscoding = true,
+                MediaStreams =
+                [
+                    new MediaStream { Index = 0, Type = MediaStreamType.Video, Codec = "hevc", Profile = "main", Width = 1280, Height = 720, BitDepth = 8, BitRate = 4_000_000, ColorTransfer = hdrSource ? "smpte2084" : "bt709" },
+                    new MediaStream { Index = 1, Type = MediaStreamType.Audio, Codec = "aac", Channels = 2, SampleRate = 48000, BitRate = 192000 }
+                ]
+            };
+            var profile = CreateHdrProfile(hdrClient);
+            var originalTranscodingProfile = profile.TranscodingProfiles[0];
+            helper.SetDeviceSpecificData(movie, source, profile, new ClaimsPrincipal(), 20_192_000, 0, source.Id, null, null, null, "session", user.Id, true, true, true, true, true, mode, 3840, 2160, null, false, IPAddress.Loopback, true, 1600, 120, 90, 60);
+            if (enabled)
+            {
+                Assert.False(source.SupportsDirectPlay);
+                Assert.False(source.SupportsDirectStream);
+                Assert.Equal("mp4", source.TranscodingContainer);
+                Assert.Equal(MediaStreamProtocol.hls, source.TranscodingSubProtocol);
+                var query = QueryHelpers.ParseQuery(new Uri("http://localhost" + source.TranscodingUrl).Query);
+                Assert.Equal("hevc", query["VideoCodec"].ToString());
+                Assert.Equal("main10", query["hevc-profile"].ToString());
+                Assert.Equal("10", query["hevc-videobitdepth"].ToString());
+                Assert.Equal("HDR10", query["hevc-rangetype"].ToString());
+                Assert.Equal("true", query["videoTrueHdr"].ToString());
+                Assert.Equal("1600", query["videoTrueHdrPeakBrightness"].ToString());
+                Assert.Equal("false", query["allowVideoStreamCopy"].ToString());
+                TestContext.Current.TestOutputHelper!.WriteLine(source.TranscodingUrl);
+            }
+            else
+            {
+                Assert.True(source.SupportsDirectPlay);
+                Assert.Null(source.TranscodingUrl);
+            }
+
+            Assert.Same(originalTranscodingProfile, profile.TranscodingProfiles[0]);
+        }
+
+        private static DeviceProfile CreateHdrProfile(bool hdrClient)
+        {
+            return new DeviceProfile
+            {
+                DirectPlayProfiles = [new DirectPlayProfile { Type = DlnaProfileType.Video, Container = "mkv", VideoCodec = "hevc", AudioCodec = "aac" }],
+                TranscodingProfiles = [new TranscodingProfile { Type = DlnaProfileType.Video, Context = EncodingContext.Streaming, Container = "mp4", Protocol = MediaStreamProtocol.hls, VideoCodec = "hevc", AudioCodec = "aac" }],
+                CodecProfiles =
+                [
+                    new CodecProfile
+                    {
+                        Type = CodecType.Video,
+                        Codec = "hevc",
+                        Conditions = [new ProfileCondition { Property = ProfileConditionValue.VideoRangeType, Condition = ProfileConditionType.EqualsAny, Value = hdrClient ? "SDR|HDR10" : "SDR" }]
+                    }
+                ]
+            };
         }
 
         [Fact]

@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Text;
 using MediaBrowser.Model.Dlna;
+using MediaBrowser.Model.MediaInfo;
 using Xunit;
 
 namespace Jellyfin.Model.Tests.Dlna;
@@ -221,8 +223,17 @@ public class StreamInfoTests
         Assert.Equal(legacyUrl, newUrl, ignoreCase: true);
     }
 
-    [Fact]
-    public void ToUrl_VideoUpscaling_SerializesExactTargetAndMode()
+    [Theory]
+    [InlineData(2, "Anime4KModeA")]
+    [InlineData(8, "NvidiaVsrLow")]
+    [InlineData(9, "NvidiaVsrMedium")]
+    [InlineData(10, "NvidiaVsrHigh")]
+    [InlineData(11, "NvidiaVsrUltra")]
+    [InlineData(12, "NvidiaVsrQLow")]
+    [InlineData(13, "NvidiaVsrQMedium")]
+    [InlineData(14, "NvidiaVsrQHigh")]
+    [InlineData(15, "NvidiaVsrQUltra")]
+    public void ToUrl_VideoUpscaling_SerializesExactTargetAndMode(int mode, string expectedMode)
     {
         var streamInfo = new StreamInfo
         {
@@ -231,7 +242,7 @@ public class StreamInfoTests
             DeviceProfile = new DeviceProfile(),
             Width = 3840,
             Height = 2160,
-            VideoUpscalingMode = MediaBrowser.Model.MediaInfo.VideoUpscalingMode.Anime4KModeA
+            VideoUpscalingMode = (VideoUpscalingMode)mode
         };
 
         streamInfo.SetOption("videoUpscalingScaler", "ewa_lanczos4sharpest");
@@ -242,9 +253,36 @@ public class StreamInfoTests
 
         Assert.Equal("3840", query["Width"]);
         Assert.Equal("2160", query["Height"]);
-        Assert.Equal("Anime4KModeA", query["videoUpscalingMode"]);
+        Assert.Equal(expectedMode, query["videoUpscalingMode"]);
         Assert.Equal("ewa_lanczos4sharpest", query["videoUpscalingScaler"]);
         Assert.Equal("48", query["videoUpscalingDebandThreshold"]);
+    }
+
+    [Theory]
+    [InlineData(true, 400, 0, 0, 10)]
+    [InlineData(false, 2000, 200, 200, 100)]
+    public void ToUrl_TrueHdr_SerializesLowercaseOptionsOnlyWhenEnabled(bool enabled, int peakBrightness, int contrast, int saturation, int middleGray)
+    {
+        var streamInfo = new StreamInfo
+        {
+            ItemId = Guid.NewGuid(),
+            MediaType = DlnaProfileType.Video,
+            DeviceProfile = new DeviceProfile(),
+            VideoTrueHdr = enabled,
+            VideoTrueHdrPeakBrightness = peakBrightness,
+            VideoTrueHdrContrast = contrast,
+            VideoTrueHdrSaturation = saturation,
+            VideoTrueHdrMiddleGray = middleGray
+        };
+
+        var queryString = streamInfo.ToUrl(BaseUrl, "123", null).Split('?', 2)[1];
+        var query = System.Web.HttpUtility.ParseQueryString(queryString);
+
+        Assert.Equal(enabled ? "true" : null, query["videoTrueHdr"]);
+        Assert.Equal(enabled ? peakBrightness.ToString(CultureInfo.InvariantCulture) : null, query["videoTrueHdrPeakBrightness"]);
+        Assert.Equal(enabled ? contrast.ToString(CultureInfo.InvariantCulture) : null, query["videoTrueHdrContrast"]);
+        Assert.Equal(enabled ? saturation.ToString(CultureInfo.InvariantCulture) : null, query["videoTrueHdrSaturation"]);
+        Assert.Equal(enabled ? middleGray.ToString(CultureInfo.InvariantCulture) : null, query["videoTrueHdrMiddleGray"]);
     }
 
     [Fact]

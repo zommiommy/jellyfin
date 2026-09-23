@@ -181,6 +181,31 @@ public class StreamInfo
     public VideoUpscalingMode VideoUpscalingMode { get; set; }
 
     /// <summary>
+    /// Gets or sets a value indicating whether to convert SDR video to HDR using NVIDIA RTX Video HDR.
+    /// </summary>
+    public bool VideoTrueHdr { get; set; }
+
+    /// <summary>
+    /// Gets or sets the TrueHDR peak brightness in nits, from 400 to 2000. Defaults to 1000.
+    /// </summary>
+    public int? VideoTrueHdrPeakBrightness { get; set; }
+
+    /// <summary>
+    /// Gets or sets the TrueHDR contrast, from 0 to 200. Defaults to 100.
+    /// </summary>
+    public int? VideoTrueHdrContrast { get; set; }
+
+    /// <summary>
+    /// Gets or sets the TrueHDR saturation, from 0 to 200. Defaults to 100.
+    /// </summary>
+    public int? VideoTrueHdrSaturation { get; set; }
+
+    /// <summary>
+    /// Gets or sets the TrueHDR middle gray, from 10 to 100. Defaults to 50.
+    /// </summary>
+    public int? VideoTrueHdrMiddleGray { get; set; }
+
+    /// <summary>
     /// Gets or sets the maximum output width.
     /// </summary>
     /// <value>The output width.</value>
@@ -983,6 +1008,35 @@ public class StreamInfo
         {
             sb.Append("&videoUpscalingMode=");
             sb.Append(VideoUpscalingMode);
+        }
+
+        if (VideoTrueHdr)
+        {
+            sb.Append("&videoTrueHdr=true");
+
+            if (VideoTrueHdrPeakBrightness.HasValue)
+            {
+                sb.Append("&videoTrueHdrPeakBrightness=");
+                sb.Append(VideoTrueHdrPeakBrightness.Value.ToString(CultureInfo.InvariantCulture));
+            }
+
+            if (VideoTrueHdrContrast.HasValue)
+            {
+                sb.Append("&videoTrueHdrContrast=");
+                sb.Append(VideoTrueHdrContrast.Value.ToString(CultureInfo.InvariantCulture));
+            }
+
+            if (VideoTrueHdrSaturation.HasValue)
+            {
+                sb.Append("&videoTrueHdrSaturation=");
+                sb.Append(VideoTrueHdrSaturation.Value.ToString(CultureInfo.InvariantCulture));
+            }
+
+            if (VideoTrueHdrMiddleGray.HasValue)
+            {
+                sb.Append("&videoTrueHdrMiddleGray=");
+                sb.Append(VideoTrueHdrMiddleGray.Value.ToString(CultureInfo.InvariantCulture));
+            }
         }
 
         if (SubtitleStreamIndex.HasValue && (AlwaysBurnInSubtitleWhenTranscoding || SubtitleDeliveryMethod != SubtitleDeliveryMethod.External) && SubtitleStreamIndex != -1)

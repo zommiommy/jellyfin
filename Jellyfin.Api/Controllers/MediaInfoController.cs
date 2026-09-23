@@ -111,10 +111,12 @@ public class MediaInfoController : BaseJellyfinApiController
     /// <param name="allowAudioStreamCopy">Whether to allow to copy the audio stream. Default: true.</param>
     /// <param name="playbackInfoDto">The playback info.</param>
     /// <response code="200">Playback info returned.</response>
+    /// <response code="400">Video processing options are invalid.</response>
     /// <response code="404">Item not found.</response>
     /// <returns>A <see cref="Task"/> containing a <see cref="PlaybackInfoResponse"/> with the playback info.</returns>
     [HttpPost("Items/{itemId}/PlaybackInfo")]
     [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<PlaybackInfoResponse>> GetPostedPlaybackInfo(
         [FromRoute, Required] Guid itemId,
@@ -168,10 +170,16 @@ public class MediaInfoController : BaseJellyfinApiController
         var videoUpscalingWidth = playbackInfoDto?.VideoUpscalingWidth;
         var videoUpscalingHeight = playbackInfoDto?.VideoUpscalingHeight;
         var videoUpscalingOptions = playbackInfoDto?.VideoUpscalingOptions;
-        var videoUpscalingError = ValidateVideoUpscalingRequest(videoUpscalingMode, videoUpscalingWidth, videoUpscalingHeight);
-        if (videoUpscalingError is not null)
+        var videoTrueHdr = playbackInfoDto?.VideoTrueHdr ?? false;
+        var videoTrueHdrPeakBrightness = playbackInfoDto?.VideoTrueHdrPeakBrightness;
+        var videoTrueHdrContrast = playbackInfoDto?.VideoTrueHdrContrast;
+        var videoTrueHdrSaturation = playbackInfoDto?.VideoTrueHdrSaturation;
+        var videoTrueHdrMiddleGray = playbackInfoDto?.VideoTrueHdrMiddleGray;
+        var videoRequestError = ValidateVideoUpscalingRequest(videoUpscalingMode, videoUpscalingWidth, videoUpscalingHeight)
+            ?? ValidateVideoTrueHdrRequest(videoTrueHdrPeakBrightness, videoTrueHdrContrast, videoTrueHdrSaturation, videoTrueHdrMiddleGray);
+        if (videoRequestError is not null)
         {
-            return BadRequest(videoUpscalingError);
+            return BadRequest(videoRequestError);
         }
 
         userId = RequestHelpers.GetUserId(User, userId);
@@ -225,7 +233,12 @@ public class MediaInfoController : BaseJellyfinApiController
                     videoUpscalingHeight,
                     videoUpscalingOptions,
                     playbackInfoDto?.AlwaysBurnInSubtitleWhenTranscoding ?? false,
-                    Request.HttpContext.GetNormalizedRemoteIP());
+                    Request.HttpContext.GetNormalizedRemoteIP(),
+                    videoTrueHdr,
+                    videoTrueHdrPeakBrightness,
+                    videoTrueHdrContrast,
+                    videoTrueHdrSaturation,
+                    videoTrueHdrMiddleGray);
             }
 
             _mediaInfoHelper.SortMediaSources(info, maxStreamingBitrate, item.Id);
@@ -257,6 +270,11 @@ public class MediaInfoController : BaseJellyfinApiController
                         VideoUpscalingWidth = videoUpscalingWidth,
                         VideoUpscalingHeight = videoUpscalingHeight,
                         VideoUpscalingOptions = videoUpscalingOptions,
+                        VideoTrueHdr = videoTrueHdr,
+                        VideoTrueHdrPeakBrightness = videoTrueHdrPeakBrightness,
+                        VideoTrueHdrContrast = videoTrueHdrContrast,
+                        VideoTrueHdrSaturation = videoTrueHdrSaturation,
+                        VideoTrueHdrMiddleGray = videoTrueHdrMiddleGray,
                         AlwaysBurnInSubtitleWhenTranscoding = playbackInfoDto?.AlwaysBurnInSubtitleWhenTranscoding ?? false
                     }).ConfigureAwait(false);
 
@@ -284,9 +302,11 @@ public class MediaInfoController : BaseJellyfinApiController
     /// <param name="enableDirectStream">Whether to enable direct stream. Default: true.</param>
     /// <param name="alwaysBurnInSubtitleWhenTranscoding">Always burn-in subtitle when transcoding.</param>
     /// <response code="200">Media source opened.</response>
+    /// <response code="400">Video processing options are invalid.</response>
     /// <returns>A <see cref="Task"/> containing a <see cref="LiveStreamResponse"/>.</returns>
     [HttpPost("LiveStreams/Open")]
     [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<ActionResult<LiveStreamResponse>> OpenLiveStream(
         [FromQuery] string? openToken,
         [FromQuery] Guid? userId,
@@ -320,16 +340,22 @@ public class MediaInfoController : BaseJellyfinApiController
             VideoUpscalingWidth = openLiveStreamDto?.VideoUpscalingWidth,
             VideoUpscalingHeight = openLiveStreamDto?.VideoUpscalingHeight,
             VideoUpscalingOptions = openLiveStreamDto?.VideoUpscalingOptions,
+            VideoTrueHdr = openLiveStreamDto?.VideoTrueHdr ?? false,
+            VideoTrueHdrPeakBrightness = openLiveStreamDto?.VideoTrueHdrPeakBrightness,
+            VideoTrueHdrContrast = openLiveStreamDto?.VideoTrueHdrContrast,
+            VideoTrueHdrSaturation = openLiveStreamDto?.VideoTrueHdrSaturation,
+            VideoTrueHdrMiddleGray = openLiveStreamDto?.VideoTrueHdrMiddleGray,
             EnableDirectPlay = enableDirectPlay ?? openLiveStreamDto?.EnableDirectPlay ?? true,
             EnableDirectStream = enableDirectStream ?? openLiveStreamDto?.EnableDirectStream ?? true,
             DirectPlayProtocols = openLiveStreamDto?.DirectPlayProtocols ?? new[] { MediaProtocol.Http },
             AlwaysBurnInSubtitleWhenTranscoding = alwaysBurnInSubtitleWhenTranscoding ?? openLiveStreamDto?.AlwaysBurnInSubtitleWhenTranscoding ?? false
         };
 
-        var videoUpscalingError = ValidateVideoUpscalingRequest(request.VideoUpscalingMode, request.VideoUpscalingWidth, request.VideoUpscalingHeight);
-        if (videoUpscalingError is not null)
+        var videoRequestError = ValidateVideoUpscalingRequest(request.VideoUpscalingMode, request.VideoUpscalingWidth, request.VideoUpscalingHeight)
+            ?? ValidateVideoTrueHdrRequest(request.VideoTrueHdrPeakBrightness, request.VideoTrueHdrContrast, request.VideoTrueHdrSaturation, request.VideoTrueHdrMiddleGray);
+        if (videoRequestError is not null)
         {
-            return BadRequest(videoUpscalingError);
+            return BadRequest(videoRequestError);
         }
 
         return await _mediaInfoHelper.OpenMediaSource(HttpContext, request).ConfigureAwait(false);
@@ -374,6 +400,11 @@ public class MediaInfoController : BaseJellyfinApiController
 
     private static string? ValidateVideoUpscalingRequest(VideoUpscalingMode mode, int? width, int? height)
     {
+        if (!Enum.IsDefined(mode))
+        {
+            return "The video upscaling mode is not supported.";
+        }
+
         if (mode == VideoUpscalingMode.None)
         {
             return null;
@@ -387,6 +418,31 @@ public class MediaInfoController : BaseJellyfinApiController
         if (width is < 2 or > 4096 || height is < 2 or > 4096 || width % 2 != 0 || height % 2 != 0)
         {
             return "Video upscaling dimensions must be even values between 2 and 4096.";
+        }
+
+        return null;
+    }
+
+    private static string? ValidateVideoTrueHdrRequest(int? peakBrightness, int? contrast, int? saturation, int? middleGray)
+    {
+        if (peakBrightness is < 400 or > 2000)
+        {
+            return "TrueHDR peak brightness must be between 400 and 2000 nits.";
+        }
+
+        if (contrast is < 0 or > 200)
+        {
+            return "TrueHDR contrast must be between 0 and 200.";
+        }
+
+        if (saturation is < 0 or > 200)
+        {
+            return "TrueHDR saturation must be between 0 and 200.";
+        }
+
+        if (middleGray is < 10 or > 100)
+        {
+            return "TrueHDR middle gray must be between 10 and 100.";
         }
 
         return null;
