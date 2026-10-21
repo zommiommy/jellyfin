@@ -4176,9 +4176,11 @@ namespace MediaBrowser.Controller.MediaEncoding
             var debandRadius = GetVideoUpscalingDoubleOption(state.BaseRequest, "videoUpscalingDebandRadius", 24, 0, 1024);
             var debandGrain = GetVideoUpscalingDoubleOption(state.BaseRequest, "videoUpscalingDebandGrain", 16, 0, 1024);
 
+            // The output is always nv12: callers download it as nv12 for NVENC, and libplacebo
+            // would otherwise keep the input format, which is p010 for 10-bit sources.
             return string.Format(
                 CultureInfo.InvariantCulture,
-                "libplacebo=w={0}:h={1}:upscaler={2}:downscaler={3}:antiringing={4}:deband={5}:deband_iterations={6}:deband_threshold={7}:deband_radius={8}:deband_grain={9}:extra_opts='plane_upscaler={10}':custom_shader_path='{11}'",
+                "libplacebo=w={0}:h={1}:upscaler={2}:downscaler={3}:antiringing={4}:deband={5}:deband_iterations={6}:deband_threshold={7}:deband_radius={8}:deband_grain={9}:extra_opts='plane_upscaler={10}':custom_shader_path='{11}':format=nv12",
                 outputWidth.Value,
                 outputHeight.Value,
                 upscaler,
@@ -4535,8 +4537,17 @@ namespace MediaBrowser.Controller.MediaEncoding
 
                 if (videoUpscalingFilter is not null)
                 {
+                    // hwdownload can only emit the frames' own format, and NVDEC decodes 10-bit and
+                    // RExt sources to p010, p016 or yuv444p*: normalize those to p010 on the GPU.
+                    var downloadFormat = "nv12";
+                    if (GetVideoColorBitDepth(state) > 8 || IsVideoStreamHevcRext(state))
+                    {
+                        downloadFormat = "p010";
+                        mainFilters.Add("scale_cuda=format=p010");
+                    }
+
                     mainFilters.Add("hwdownload");
-                    mainFilters.Add("format=nv12");
+                    mainFilters.Add($"format={downloadFormat}");
                     mainFilters.Add("hwupload");
                     mainFilters.Add(videoUpscalingFilter);
                     mainFilters.Add("hwdownload");

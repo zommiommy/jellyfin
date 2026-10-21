@@ -407,6 +407,60 @@ public class EncodingHelperTests
     }
 
     [Theory]
+    [InlineData("h264", "yuv420p", null)]
+    [InlineData("hevc", "yuv420p10le", "p010")]
+    [InlineData("hevc", "yuv444p", "p010")]
+    public void GetNvidiaVidFiltersPrefered_VideoUpscaling_DownloadsNvdecFramesInTheirOwnFormat(
+        string codec,
+        string pixelFormat,
+        string? normalizedFormat)
+    {
+        var shaderDirectory = Directory.CreateTempSubdirectory("jellyfin-upscale-test-");
+        try
+        {
+            var shaderPath = Path.Combine(shaderDirectory.FullName, "FSR.glsl");
+            File.WriteAllText(shaderPath, "//!HOOK MAIN");
+
+            var mediaEncoder = new Mock<IMediaEncoder>();
+            mediaEncoder.Setup(i => i.SupportsHwaccel("vulkan")).Returns(true);
+            mediaEncoder.Setup(i => i.SupportsFilter("libplacebo")).Returns(true);
+            mediaEncoder.Setup(i => i.SupportsFilter("hwupload_cuda")).Returns(true);
+            mediaEncoder.Setup(i => i.EscapeSubtitleFilterPath(shaderPath)).Returns(shaderPath);
+
+            var state = BuildState(subtitle: null, deliveryMethod: null);
+            state.VideoStream!.Codec = codec;
+            state.VideoStream.PixelFormat = pixelFormat;
+            state.VideoStream.Width = 1920;
+            state.VideoStream.Height = 1080;
+            state.BaseRequest.Width = 3840;
+            state.BaseRequest.Height = 2160;
+            state.BaseRequest.VideoUpscalingMode = VideoUpscalingMode.Fsr;
+
+            var options = new EncodingOptions
+            {
+                HardwareAccelerationType = HardwareAccelerationType.nvenc,
+                VideoUpscalingShaderDirectory = shaderDirectory.FullName
+            };
+
+            var filters = CreateHelper(mediaEncoder.Object).GetNvidiaVidFiltersPrefered(state, options, codec + "_cuda", "av1_nvenc").MainFilters;
+            var upscaler = filters.FindIndex(filter => filter.StartsWith("libplacebo=", StringComparison.Ordinal));
+
+            // hwdownload only emits the CUDA frames' own format: nv12 for 8-bit 4:2:0 NVDEC output,
+            // anything else only after scale_cuda normalized it.
+            var expectedInput = normalizedFormat is null
+                ? new[] { "hwdownload", "format=nv12", "hwupload" }
+                : new[] { $"scale_cuda=format={normalizedFormat}", "hwdownload", $"format={normalizedFormat}", "hwupload" };
+            Assert.Equal(expectedInput, filters.Skip(upscaler - expectedInput.Length).Take(expectedInput.Length));
+            Assert.EndsWith(":format=nv12", filters[upscaler], StringComparison.Ordinal);
+            Assert.Equal(new[] { "hwdownload", "format=nv12", "hwupload_cuda" }, filters.Skip(upscaler + 1));
+        }
+        finally
+        {
+            shaderDirectory.Delete(true);
+        }
+    }
+
+    [Theory]
     [InlineData(1920, 1080, 3840, 2160, VideoUpscalingMode.NvidiaVsrQUltra, "qultra", 2, false, false)]
     [InlineData(1280, 720, 3840, 2160, VideoUpscalingMode.NvidiaVsrLow, "low", 2, false, false)]
     [InlineData(720, 480, 2880, 2160, VideoUpscalingMode.NvidiaVsrUltra, "ultra", 4, true, false)]
