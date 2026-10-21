@@ -206,6 +206,36 @@ public sealed class ItemPersistenceOwnedRowTests : SqliteDbTestFixture
         }
     }
 
+    [Fact]
+    public async Task ReattachUserData_DetachedRowUnderKeyTheItemAlreadyHolds_MergesInsteadOfConflicting()
+    {
+        var movie = CreateMovie(Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc"));
+        var keys = movie.GetUserDataKeys();
+        SeedUserDataItem(movie);
+
+        using (var ctx = CreateDbContext())
+        {
+            // The item already holds a row under the key its detached, more recently played row carries.
+            ctx.UserData.AddRange(
+                CreateRow(movie.Id, keys[0], new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc), playCount: 0, positionTicks: 0),
+                CreateDetachedRow(keys[0], new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc), playCount: 1, positionTicks: 0, played: true));
+            await ctx.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        await _service.ReattachUserDataAsync(movie, TestContext.Current.CancellationToken);
+
+        using (var ctx = CreateDbContext())
+        {
+            var rows = ctx.UserData.Where(e => e.ItemId.Equals(movie.Id)).ToList();
+
+            Assert.Equal(
+                keys.OrderBy(e => e, StringComparer.Ordinal),
+                rows.Select(e => e.CustomDataKey).OrderBy(e => e, StringComparer.Ordinal));
+            Assert.All(rows, row => Assert.True(row.Played));
+            Assert.Empty(ctx.UserData.Where(e => e.ItemId.Equals(BaseItemRepository.PlaceholderId)));
+        }
+    }
+
     private static Book CreateBook(Guid id, Dictionary<string, string> providerIds, MetadataField[] lockedFields)
     {
         var book = new Book
