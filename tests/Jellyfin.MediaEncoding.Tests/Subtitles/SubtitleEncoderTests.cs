@@ -7,11 +7,14 @@ using System.Threading;
 using System.Threading.Tasks;
 using AutoFixture;
 using AutoFixture.AutoMoq;
+using MediaBrowser.Controller.IO;
 using MediaBrowser.MediaEncoding.Subtitles;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
+using MediaBrowser.Model.IO;
 using MediaBrowser.Model.MediaInfo;
 using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 using Xunit;
 
 namespace Jellyfin.MediaEncoding.Subtitles.Tests
@@ -140,6 +143,76 @@ namespace Jellyfin.MediaEncoding.Subtitles.Tests
             Assert.Equal(subtitleInfo.Protocol, result.Protocol);
             Assert.Equal(subtitleInfo.Format, result.Format);
             Assert.Equal(subtitleInfo.IsExternal, result.IsExternal);
+        }
+
+        [Fact]
+        public async Task ExtractAllExtractableSubtitles_IndexNowNamesAnotherStream_DropsItsCache()
+        {
+            // English and Italian ASS are the file's streams 2 and 3. They were extracted while the item had no external
+            // subtitles, under Jellyfin indexes 2 and 3; an added sidecar then took index 0 and shifted them to 3 and 4,
+            // so index 3 now names English while its cache still holds Italian.
+            var cancellationToken = TestContext.Current.CancellationToken;
+            var directory = Directory.CreateTempSubdirectory();
+            try
+            {
+                var mediaPath = Path.Join(directory.FullName, "episode.mkv");
+                await File.WriteAllTextAsync(mediaPath, "matroska", cancellationToken);
+                var media = new FileInfo(mediaPath);
+
+                string CachePath(int index) => Path.Join(directory.FullName, index.ToString(CultureInfo.InvariantCulture) + ".ass");
+                async Task WriteCache(int index, int sourceStreamIndex)
+                {
+                    await File.WriteAllTextAsync(CachePath(index), "Italian", cancellationToken);
+                    await File.WriteAllTextAsync(CachePath(index) + ".meta", SubtitleEncoder.FormatCacheMeta(media.Length, media.LastWriteTimeUtc, sourceStreamIndex), cancellationToken);
+                }
+
+                await WriteCache(3, 3); // extracted before the shift
+                await WriteCache(4, 3); // extracted after the shift
+
+                var fixture = new Fixture().Customize(new AutoMoqCustomization { ConfigureMembers = true });
+                fixture.Freeze<Mock<IPathManager>>()
+                    .Setup(p => p.GetSubtitlePath(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string>()))
+                    .Returns((string _, int index, string extension) => Path.Join(directory.FullName, index.ToString(CultureInfo.InvariantCulture) + extension));
+                fixture.Freeze<Mock<IFileSystem>>()
+                    .Setup(f => f.GetFileInfo(It.IsAny<string>()))
+                    .Returns((string path) =>
+                    {
+                        var info = new FileInfo(path);
+                        return new FileSystemMetadata
+                        {
+                            FullName = path,
+                            Exists = info.Exists,
+                            Length = info.Exists ? info.Length : 0,
+                            LastWriteTimeUtc = info.Exists ? info.LastWriteTimeUtc : default
+                        };
+                    });
+                var subtitleEncoder = fixture.Create<SubtitleEncoder>();
+
+                var mediaSource = new MediaSourceInfo
+                {
+                    Id = "5da43f7c5dca4eb0217a9206be27e8bf",
+                    Path = mediaPath,
+                    Protocol = MediaProtocol.File,
+                    MediaStreams =
+                    [
+                        new MediaStream { Index = 0, Type = MediaStreamType.Subtitle, Codec = "subrip", IsExternal = true, Path = Path.Join(directory.FullName, "episode.en.srt") },
+                        new MediaStream { Index = 1, Type = MediaStreamType.Video, Codec = "hevc" },
+                        new MediaStream { Index = 2, Type = MediaStreamType.Audio, Codec = "aac" },
+                        new MediaStream { Index = 3, Type = MediaStreamType.Subtitle, Codec = "ass", Language = "eng", SupportsExternalStream = true },
+                        new MediaStream { Index = 4, Type = MediaStreamType.Subtitle, Codec = "ass", Language = "ita", SupportsExternalStream = true }
+                    ]
+                };
+
+                // ffmpeg cannot run here, so a dropped cache stays dropped.
+                await subtitleEncoder.ExtractAllExtractableSubtitles(mediaSource, cancellationToken);
+
+                Assert.False(File.Exists(CachePath(3)));
+                Assert.Equal("Italian", await File.ReadAllTextAsync(CachePath(4), cancellationToken));
+            }
+            finally
+            {
+                directory.Delete(true);
+            }
         }
 
         public static TheoryData<Encoding> GetSubtitleStream_NonUtf8LocalFile_TestData()

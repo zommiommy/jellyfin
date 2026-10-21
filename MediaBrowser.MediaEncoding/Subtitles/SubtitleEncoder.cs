@@ -334,9 +334,11 @@ namespace MediaBrowser.MediaEncoding.Subtitles
         {
             using (await _semaphoreLocks.LockAsync(outputPath, cancellationToken).ConfigureAwait(false))
             {
-                if (!IsCachedSubtitleFresh(outputPath, subtitleStream.Path))
+                var sourceStreamIndex = EncodingHelper.FindIndex(mediaSource.MediaStreams, subtitleStream);
+                if (!IsCachedSubtitleFresh(outputPath, subtitleStream.Path, sourceStreamIndex))
                 {
-                    await ConvertTextSubtitleToSrtInternal(subtitleStream, mediaSource, outputPath, cancellationToken).ConfigureAwait(false);
+                    DeleteStaleCache(outputPath);
+                    await ConvertTextSubtitleToSrtInternal(subtitleStream, mediaSource, outputPath, sourceStreamIndex, cancellationToken).ConfigureAwait(false);
                 }
             }
         }
@@ -352,13 +354,26 @@ namespace MediaBrowser.MediaEncoding.Subtitles
             };
         }
 
-        // Records "this cache was built from this exact source revision" in a sidecar file next to the cache: "<sizeBytes>:<mtimeTicks>"
+        // Records what a cache was built from in a sidecar file next to it: "<sizeBytes>:<mtimeTicks>:<streamIndex>", the source
+        // revision plus the stream's index within that source (the ffmpeg -map index). The cache is named by the Jellyfin stream
+        // index, which shifts when external subtitles are added ahead of the embedded ones, so one name can come to denote another
+        // stream of the same unchanged file.
         private static string GetCacheMetaPath(string cachePath) => cachePath + ".meta";
 
-        private static string FormatCacheMeta(long length, DateTime lastWriteUtc)
-            => string.Create(CultureInfo.InvariantCulture, $"{length}:{lastWriteUtc.Ticks}");
+        internal static string FormatCacheMeta(long length, DateTime lastWriteUtc, int sourceStreamIndex)
+            => string.Create(CultureInfo.InvariantCulture, $"{length}:{lastWriteUtc.Ticks}:{sourceStreamIndex}");
 
-        private bool IsCachedSubtitleFresh(string cachePath, string? sourcePath)
+        // ffmpeg leaves an output it never opened in place and ExtractSubtitlesForFile accepts any non-empty output, so a stale
+        // cache must go before a rebuild: a failed run then surfaces instead of stamping the old text fresh.
+        private static void DeleteStaleCache(string cachePath)
+        {
+            if (File.Exists(cachePath))
+            {
+                File.Delete(cachePath);
+            }
+        }
+
+        private bool IsCachedSubtitleFresh(string cachePath, string? sourcePath, int sourceStreamIndex)
         {
             if (!File.Exists(cachePath))
             {
@@ -386,7 +401,7 @@ namespace MediaBrowser.MediaEncoding.Subtitles
             try
             {
                 var sourceInfo = _fileSystem.GetFileInfo(sourcePath);
-                var expected = FormatCacheMeta(sourceInfo.Length, sourceInfo.LastWriteTimeUtc);
+                var expected = FormatCacheMeta(sourceInfo.Length, sourceInfo.LastWriteTimeUtc, sourceStreamIndex);
                 var actual = File.ReadAllText(metaPath);
                 return string.Equals(expected, actual, StringComparison.Ordinal);
             }
@@ -396,7 +411,7 @@ namespace MediaBrowser.MediaEncoding.Subtitles
             }
         }
 
-        private void WriteCacheMeta(string cachePath, string? sourcePath)
+        private void WriteCacheMeta(string cachePath, string? sourcePath, int sourceStreamIndex)
         {
             if (string.IsNullOrEmpty(sourcePath))
             {
@@ -411,7 +426,7 @@ namespace MediaBrowser.MediaEncoding.Subtitles
                     return;
                 }
 
-                File.WriteAllText(GetCacheMetaPath(cachePath), FormatCacheMeta(sourceInfo.Length, sourceInfo.LastWriteTimeUtc));
+                File.WriteAllText(GetCacheMetaPath(cachePath), FormatCacheMeta(sourceInfo.Length, sourceInfo.LastWriteTimeUtc, sourceStreamIndex));
             }
             catch (IOException ex)
             {
@@ -425,12 +440,13 @@ namespace MediaBrowser.MediaEncoding.Subtitles
         /// <param name="subtitleStream">The subtitle stream.</param>
         /// <param name="mediaSource">The input mediaSource.</param>
         /// <param name="outputPath">The output path.</param>
+        /// <param name="sourceStreamIndex">The index of the subtitle stream within its source file.</param>
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>Task.</returns>
         /// <exception cref="ArgumentNullException">
         /// The <c>inputPath</c> or <c>outputPath</c> is <c>null</c>.
         /// </exception>
-        private async Task ConvertTextSubtitleToSrtInternal(MediaStream subtitleStream, MediaSourceInfo mediaSource, string outputPath, CancellationToken cancellationToken)
+        private async Task ConvertTextSubtitleToSrtInternal(MediaStream subtitleStream, MediaSourceInfo mediaSource, string outputPath, int sourceStreamIndex, CancellationToken cancellationToken)
         {
             var inputPath = subtitleStream.Path;
             ArgumentException.ThrowIfNullOrEmpty(inputPath);
@@ -462,7 +478,7 @@ namespace MediaBrowser.MediaEncoding.Subtitles
                 [outputPath],
                 cancellationToken).ConfigureAwait(false);
 
-            WriteCacheMeta(outputPath, inputPath);
+            WriteCacheMeta(outputPath, inputPath, sourceStreamIndex);
         }
 
         private string GetExtractableSubtitleFormat(MediaStream subtitleStream)
@@ -539,13 +555,14 @@ namespace MediaBrowser.MediaEncoding.Subtitles
                     var releaser = await _semaphoreLocks.LockAsync(outputPath, cancellationToken).ConfigureAwait(false);
 
                     var sourcePath = string.IsNullOrEmpty(subtitleStream.Path) ? mediaSource.Path : subtitleStream.Path;
-                    if (IsCachedSubtitleFresh(outputPath, sourcePath))
+                    if (IsCachedSubtitleFresh(outputPath, sourcePath, EncodingHelper.FindIndex(mediaSource.MediaStreams, subtitleStream)))
                     {
                         releaser.Dispose();
                         continue;
                     }
 
                     locks.Add(releaser);
+                    DeleteStaleCache(outputPath);
                     extractableStreams.Add(subtitleStream);
                 }
 
@@ -594,6 +611,7 @@ namespace MediaBrowser.MediaEncoding.Subtitles
             {
                 var inputPath = _mediaEncoder.GetInputArgument(mksFile, mediaSource);
                 var outputPaths = new List<string>();
+                var sourceStreamIndexes = new List<int>();
                 var args = string.Format(
                     CultureInfo.InvariantCulture,
                     "-y -i {0}",
@@ -626,6 +644,7 @@ namespace MediaBrowser.MediaEncoding.Subtitles
                     Directory.CreateDirectory(Path.GetDirectoryName(outputPath) ?? throw new FileNotFoundException($"Calculated path ({outputPath}) is not valid."));
 
                     outputPaths.Add(outputPath);
+                    sourceStreamIndexes.Add(streamIndex);
                     args += string.Format(
                         CultureInfo.InvariantCulture,
                         " -map 0:{0} -an -vn -c:s {1}{2} -flush_packets 1 \"{3}\"",
@@ -637,9 +656,9 @@ namespace MediaBrowser.MediaEncoding.Subtitles
 
                 await ExtractSubtitlesForFile(inputPath, args, outputPaths, cancellationToken).ConfigureAwait(false);
 
-                foreach (var outputPath in outputPaths)
+                for (var i = 0; i < outputPaths.Count; i++)
                 {
-                    WriteCacheMeta(outputPath, mksFile);
+                    WriteCacheMeta(outputPaths[i], mksFile, sourceStreamIndexes[i]);
                 }
             }
         }
@@ -651,6 +670,7 @@ namespace MediaBrowser.MediaEncoding.Subtitles
         {
             var inputPath = _mediaEncoder.GetInputArgument(mediaSource.Path, mediaSource);
             var outputPaths = new List<string>();
+            var sourceStreamIndexes = new List<int>();
             var args = string.Format(
                 CultureInfo.InvariantCulture,
                 "-y -i {0}",
@@ -684,6 +704,7 @@ namespace MediaBrowser.MediaEncoding.Subtitles
                 Directory.CreateDirectory(Path.GetDirectoryName(outputPath) ?? throw new FileNotFoundException($"Calculated path ({outputPath}) is not valid."));
 
                 outputPaths.Add(outputPath);
+                sourceStreamIndexes.Add(streamIndex);
                 args += string.Format(
                     CultureInfo.InvariantCulture,
                     " -map 0:{0} -an -vn -c:s {1}{2} -flush_packets 1 \"{3}\"",
@@ -697,9 +718,9 @@ namespace MediaBrowser.MediaEncoding.Subtitles
             {
                 await ExtractSubtitlesForFile(inputPath, args, outputPaths, cancellationToken).ConfigureAwait(false);
 
-                foreach (var outputPath in outputPaths)
+                for (var i = 0; i < outputPaths.Count; i++)
                 {
-                    WriteCacheMeta(outputPath, mediaSource.Path);
+                    WriteCacheMeta(outputPaths[i], mediaSource.Path, sourceStreamIndexes[i]);
                 }
             }
         }
